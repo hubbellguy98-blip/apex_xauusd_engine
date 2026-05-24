@@ -1,0 +1,23 @@
+[project]
+name = "apex-xauusd-engine"
+version = "1.0.0"
+description = "Institutional-grade algorithmic execution engine specialized for high-frequency XAUUSD state modeling."
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.black]
+line-length = 120
+target-version = ['py312']
+include = '\.pyi?$'
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+select = ["E", "F", "W", "I", "N", "ASYNC"]
+ignore = ["D100", "D104"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "--strict-markers --tb=short --cov=src"

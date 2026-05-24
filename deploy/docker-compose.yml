@@ -1,0 +1,130 @@
+version: '3.8'
+
+networks:
+  trading_network:
+    name: trading_network
+    driver: bridge
+
+volumes:
+  postgres_data:
+    name: postgres_data
+  redis_data:
+    name: redis_data
+  prometheus_data:
+    name: prometheus_data
+  grafana_data:
+    name: grafana_data
+  trading_logs:
+    name: trading_logs
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: xauusd_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres_pass_2026}
+      POSTGRES_DB: ${DB_NAME:-apex_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - trading_network
+    ports:
+      - "5432:5432"
+    command: ["postgres", "-c", "shared_buffers=512MB", "-c", "max_connections=150", "-c", "synchronous_commit=off"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: xauusd_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy volatile-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - trading_network
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  trading-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xauusd_engine
+    restart: unless-stopped
+    environment:
+      - APEX_ENV=PRODUCTION
+      - DATABASE_URL=postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD:-postgres_pass_2026}@postgres:5432/${DB_NAME:-apex_db}
+      - REDIS_URL=redis://redis:6379/0
+      - APEX_TWELVEDATA_KEY=${APEX_TWELVEDATA_KEY}
+    volumes:
+      - trading_logs:/app/logs
+      - ./backtest_outputs:/app/backtest_outputs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - trading_network
+    ports:
+      - "8000:8000"
+      - "9102:9102"
+
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    container_name: xauusd_prometheus
+    restart: unless-stopped
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--retention.time=15d'
+    networks:
+      - trading_network
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: xauusd_grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin_pass_2026}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+      - ./config/grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml
+      - ./monitoring/grafana/dashboard.json:/var/lib/grafana/dashboards/main_dashboard.json
+    depends_on:
+      - prometheus
+    networks:
+      - trading_network
+    ports:
+      - "3000:3000"
+
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: xauusd_nginx
+    restart: unless-stopped
+    volumes:
+      - ./deployment/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "80:80"
+    depends_on:
+      - trading-engine
+    networks:
+      - trading_network

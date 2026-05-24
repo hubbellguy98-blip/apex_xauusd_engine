@@ -1,0 +1,25 @@
+name: Docker Production Image Build Verification
+
+on:
+  push:
+    branches: [ master ]
+
+jobs:
+  verify_docker_build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx Components
+        uses: docker/setup-buildx-action@v3
+
+      - name: Verify Container Multi-Stage Compilation
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          tags: apex-trading-engine:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

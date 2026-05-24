@@ -1,0 +1,22 @@
+# Apex Engine Database Image
+# Provides a hardened PostgreSQL runtime with health checks and initialization hooks.
+
+FROM postgres:16-alpine
+
+LABEL org.opencontainers.image.title="apex-xauusd-db"
+LABEL org.opencontainers.image.description="PostgreSQL image for Apex XAUUSD trading engine"
+LABEL org.opencontainers.image.licenses="MIT"
+
+ENV POSTGRES_DB=apex_db
+ENV POSTGRES_USER=postgres
+ENV POSTGRES_PASSWORD=postgres_pass_2026
+
+RUN apk add --no-cache bash curl
+
+COPY scripts/init_db.sh /docker-entrypoint-initdb.d/00-init-db.sh
+RUN chmod +x /docker-entrypoint-initdb.d/00-init-db.sh
+
+EXPOSE 5432
+
+HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
+  CMD pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" || exit 1
