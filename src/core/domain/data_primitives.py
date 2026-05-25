@@ -9,7 +9,7 @@ from typing import Any
 from dataclasses import dataclass, field
 from src.core.domain.constants import EventPriority
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class BaseEvent:
     """Immutable baseline structure for all event communication instances."""
     timestamp: datetime

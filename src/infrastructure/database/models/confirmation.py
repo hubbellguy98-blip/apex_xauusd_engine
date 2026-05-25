@@ -1,0 +1,1 @@
+from src.infrastructure.database.orm_models import ConfirmationModel

@@ -4,6 +4,7 @@ Responsibility: Implements the low-level communication adapters needed for backt
 Latency Profile: Simulates network latency metrics inside independent task tracks.
 """
 
+from datetime import datetime
 from typing import List, Dict, AsyncGenerator
 import structlog
 from src.core.domain.execution_models import OrderRequest, ExecutionReport, PositionSnapshot, OrderStatus

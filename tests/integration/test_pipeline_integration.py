@@ -6,6 +6,7 @@ Latency Profile: Evaluates event queue processing under simulated load.
 
 import asyncio
 import pytest
+from typing import Any
 from src.core.events.event_bus import EventBus
 from src.core.domain.constants import EventPriority
 from src.core.events.event_types import EngineEventType

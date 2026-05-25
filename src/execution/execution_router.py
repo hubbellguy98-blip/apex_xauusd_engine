@@ -105,7 +105,7 @@ class HighSpeedExecutionOrchestrator(BaseSubsystem):
         """Background pipeline consumer that extracts items from the queue and routes them to the exchange."""
         while not self._emergency_halt_active:
             try:
-                request = await self._execution_queue.pop() # Wait for incoming execution packets
+                request = await self._execution_queue.get() # Wait for incoming execution packets
                 
                 # Fetch asset-specific symbol execution locks to eliminate simultaneous duplicate entries
                 if request.symbol not in self._symbol_execution_locks:
