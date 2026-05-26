@@ -10,6 +10,7 @@ from src.core.domain.constants import OrderDirection
 from src.execution.position_sizer import InstitutionalPositionSizer
 from src.execution.drawdown_protection import CapitalProtectionDrawdownEngine
 from src.core.domain.risk_models import RiskHaltState
+from src.strategy.state_manager import CentralRuntimeStateManager
 from tests.factories.setup_factory import SetupOpportunityFactory
 from tests.factories.candle_factory import CandlePrimitiveFactory
 
@@ -23,6 +24,20 @@ def test_position_sizing_leverage_caps(state_manager: CentralRuntimeStateManager
     sizing_payload = sizer.calculate_lot_size(setup, state, score_multiplier=1.0)
     assert sizing_payload.calculated_lots > 0.0
     assert sizing_payload.risk_percentage_applied <= 1.0
+
+
+@pytest.mark.unit
+def test_position_sizing_applies_configured_lot_safety_cap(state_manager: CentralRuntimeStateManager) -> None:
+    """Ensures broker-configured lot limits are honored during risk approval."""
+    sizer = InstitutionalPositionSizer(contract_size=100.0, maximum_lots=0.01)
+    setup = SetupOpportunityFactory.create_setup(entry=2400.0, sl=2395.0, tp=2415.0)
+
+    sizing_payload = sizer.calculate_lot_size(setup, state_manager.snapshot, score_multiplier=0.75)
+
+    assert sizing_payload.calculated_lots == pytest.approx(0.01)
+    assert sizing_payload.currency_risk == pytest.approx(5.0)
+    assert sizing_payload.risk_percentage_applied == pytest.approx(0.05)
+
 
 @pytest.mark.unit
 def test_drawdown_firewall_systemic_halt(state_manager: CentralRuntimeStateManager) -> None:

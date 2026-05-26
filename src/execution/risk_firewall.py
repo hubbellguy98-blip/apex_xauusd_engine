@@ -31,13 +31,18 @@ logger = structlog.get_logger()
 class RiskManagementOrchestrator(BaseSubsystem):
     """Monitors incoming setups, executes capital sizing algorithms, and manages pre-trade safety checks."""
 
-    def __init__(self, event_bus: EventBus, state_manager: CentralRuntimeStateManager) -> None:
+    def __init__(
+        self,
+        event_bus: EventBus,
+        state_manager: CentralRuntimeStateManager,
+        maximum_lots: Optional[float] = None,
+    ) -> None:
         super().__init__("RiskManagementOrchestrator")
         self._event_bus = event_bus
         self._state_manager = state_manager
 
         # Instantiate composite verification modules
-        self._sizer = InstitutionalPositionSizer()
+        self._sizer = InstitutionalPositionSizer(maximum_lots=maximum_lots)
         self._stop_engine = DynamicStructuralStopEngine()
         self._rr_validator = AsymmetricOpportunityValidator()
         self._drawdown_firewall = CapitalProtectionDrawdownEngine()

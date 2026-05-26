@@ -107,7 +107,8 @@ async def main() -> int:
 
         setup, confirmation = _build_validation_candidate(ask, now.replace(tzinfo=None))
         scorer = TradeScoringOrchestrator(event_bus, state_manager)
-        risk_manager = RiskManagementOrchestrator(event_bus, state_manager)
+        risk_limit_lots = min(config.max_lot, VALIDATION_VOLUME_CAP)
+        risk_manager = RiskManagementOrchestrator(event_bus, state_manager, maximum_lots=risk_limit_lots)
         ranked = await scorer.process_and_rank_setup(setup, confirmation)
 
         print("MT5 pipeline validation - DRY RUN ONLY; NO ORDER WILL BE SENT")
@@ -126,11 +127,13 @@ async def main() -> int:
         )
         print(f"risk_approved={approved}")
         print(f"calculated_lots={risk_snapshot.sizing.calculated_lots:.4f}")
+        print(f"applied_currency_risk={risk_snapshot.sizing.currency_risk:.2f}")
+        print(f"applied_risk_pct={risk_snapshot.sizing.risk_percentage_applied:.4f}")
         if not approved:
             print(f"blocked_by_risk={','.join(risk_snapshot.rejection_reasons)}")
             return 1
 
-        volume = min(risk_snapshot.sizing.calculated_lots, config.max_lot, VALIDATION_VOLUME_CAP)
+        volume = risk_snapshot.sizing.calculated_lots
         request = OrderRequest(
             client_order_id=f"PIPELINE_CHECK_{uuid4().hex[:12]}",
             symbol=symbol,
