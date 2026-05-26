@@ -77,12 +77,19 @@ class MT5BrokerGateway(BrokerGatewayABC):
                     continue
                 return symbol
         all_symbols = mt5.symbols_get()
-        gold_matches = [item.name for item in all_symbols or [] if "XAU" in item.name.upper() or "GOLD" in item.name.upper()]
+        gold_matches = [
+            item.name
+            for item in all_symbols or []
+            if self._is_xauusd_instrument(item.name)
+        ]
         if gold_matches:
             symbol = gold_matches[0]
             if mt5.symbol_select(symbol, True):
                 return symbol
-        raise RuntimeError(f"Could not resolve MT5 symbol for {preferred_symbol}. Check Market Watch in MT5.")
+        raise RuntimeError(
+            f"Could not resolve an XAUUSD/Gold spot instrument for {preferred_symbol}. "
+            "Open the Gold CFD symbol in MT5 Market Watch and set APEX_SYMBOL to its exact name."
+        )
 
     async def route_order_submission(self, request: OrderRequest) -> ExecutionReport:
         self._require_connected()
@@ -116,6 +123,11 @@ class MT5BrokerGateway(BrokerGatewayABC):
         check = mt5.order_check(payload)
         if check is None:
             return self._reject(request, "ORDER_CHECK_RETURNED_NONE")
+        if getattr(check, "retcode", None) not in {0, getattr(mt5, "TRADE_RETCODE_DONE", 10009)}:
+            return self._reject(
+                request,
+                f"ORDER_CHECK_FAILED: {getattr(check, 'comment', getattr(check, 'retcode', 'UNKNOWN'))}",
+            )
 
         if self._config.dry_run:
             return self._from_mt5_result(request, check, OrderStatus.ACKNOWLEDGED, dry_run=True)
@@ -206,3 +218,8 @@ class MT5BrokerGateway(BrokerGatewayABC):
     def _require_mt5(self) -> None:
         if self._mt5 is None:
             raise RuntimeError("MT5 module is not initialized.")
+
+    @staticmethod
+    def _is_xauusd_instrument(symbol: str) -> bool:
+        normalized = symbol.upper().replace("_", "").replace("-", "")
+        return normalized.startswith("XAUUSD") or normalized == "GOLD" or normalized.startswith("GOLD.")
