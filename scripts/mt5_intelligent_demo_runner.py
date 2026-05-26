@@ -158,6 +158,14 @@ async def run_strategy(
 
         print(f"live_quotes_processed={live_quotes}")
         print(f"qualified_candidates={qualified}")
+        diagnostics = detector.diagnostic_snapshot
+        print(f"live_sweeps_detected={diagnostics['live_sweeps_detected']}")
+        print(f"reversal_candidates_detected={diagnostics['reversal_candidates_detected']}")
+        print(f"confirmation_blocks={diagnostics['confirmation_blocks']}")
+        print(f"quality_blocks={diagnostics['quality_blocks']}")
+        print(f"cooldown_blocks={diagnostics['cooldown_blocks']}")
+        if diagnostics["latest_confirmation_reasons"]:
+            print(f"latest_confirmation_rejection={','.join(diagnostics['latest_confirmation_reasons'])}")
         print("status=NO_QUALIFIED_SIGNAL_BEFORE_TIMEOUT")
         print("No order sent.")
         return 0

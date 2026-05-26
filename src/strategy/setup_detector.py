@@ -54,6 +54,16 @@ class MarketSetupOrchestrator(BaseSubsystem):
         self._qualified_candidates: List[Tuple[SetupOpportunityNode, ConfirmationSnapshot]] = []
         self._warmup_sweeps_cleared = 0
         self._setup_counter = 0
+        self._diagnostics: Dict[str, int] = {
+            "live_ticks_processed": 0,
+            "live_sweeps_detected": 0,
+            "reversal_candidates_detected": 0,
+            "cooldown_blocks": 0,
+            "confirmation_blocks": 0,
+            "quality_blocks": 0,
+            "setup_nodes_finalized": 0,
+        }
+        self._latest_confirmation_reasons: List[str] = []
 
     async def bootstrap(self) -> None:
         """Subscribes signal generation workers to the real-time data bus."""
@@ -72,6 +82,7 @@ class MarketSetupOrchestrator(BaseSubsystem):
 
     async def on_tick_received(self, event: TickNode) -> None:
         """Processes real-time ticks to evaluate reversals and run active setup invalidation checks."""
+        self._diagnostics["live_ticks_processed"] += 1
         current_time = event.timestamp.replace(tzinfo=None)
         session, _, _ = self._session_engine.evaluate_temporal_context(event.timestamp, event.mid)
         await self._state_manager.commit_market_update(
@@ -112,11 +123,13 @@ class MarketSetupOrchestrator(BaseSubsystem):
         swept_pools = self._liquidity_engine.evaluate_tick_sweeps(event)
         if not swept_pools or not self._candles_by_timeframe["1m"]:
             return
+        self._diagnostics["live_sweeps_detected"] += len(swept_pools)
         is_reversal, direction, entry, sl, tp = self._reversal_detector.evaluate_sweep_reversal(
             event, [pool for pool, _ in swept_pools], self._structural_pivots, state_snap
         )
 
         if is_reversal:
+            self._diagnostics["reversal_candidates_detected"] += 1
             await self._process_discovered_candidate(
                 SetupType.LIQUIDITY_SWEEP_REVERSAL,
                 direction,
@@ -160,6 +173,7 @@ class MarketSetupOrchestrator(BaseSubsystem):
         current_time = datetime.utcnow()
         if cooldown_key in self._cooldown_registry:
             if current_time < self._cooldown_registry[cooldown_key]:
+                self._diagnostics["cooldown_blocks"] += 1
                 return  # Block duplicate signals during active cooldown windows
 
         # 2. Trigger confirmation using directional bias learned from received closed candles.
@@ -169,6 +183,8 @@ class MarketSetupOrchestrator(BaseSubsystem):
         )
 
         if not is_confirmed:
+            self._diagnostics["confirmation_blocks"] += 1
+            self._latest_confirmation_reasons = list(confirmation_snap.invalidation_reasons)
             return  # Reject candidate nodes that fail confirmation criteria
 
         # 3. Grade Core Risk and Quality Parameters
@@ -180,6 +196,7 @@ class MarketSetupOrchestrator(BaseSubsystem):
         )
 
         if quality_tier == SetupQualityTier.INVALID_SETUP:
+            self._diagnostics["quality_blocks"] += 1
             return  # Filter out low-quality or invalid setups
 
         # 4. Construct and Route Type-Safe Setup Node
@@ -199,6 +216,7 @@ class MarketSetupOrchestrator(BaseSubsystem):
         self._discovered_setups[setup_id] = opportunity_node
         self._cooldown_registry[cooldown_key] = current_time + timedelta(minutes=15) # 15-minute cooldown per strategy configuration
         self._qualified_candidates.append((opportunity_node, confirmation_snap))
+        self._diagnostics["setup_nodes_finalized"] += 1
 
         logger.info("setup_orchestrator.signal_finalized", id=setup_id, tier=quality_tier.value, rr=f"{estimated_rr:.2f}")
 
@@ -231,3 +249,11 @@ class MarketSetupOrchestrator(BaseSubsystem):
     @property
     def warmup_sweeps_cleared(self) -> int:
         return self._warmup_sweeps_cleared
+
+    @property
+    def diagnostic_snapshot(self) -> Dict[str, Any]:
+        """Expose live decision funnel counts without changing strategy outcomes."""
+        return {
+            **self._diagnostics,
+            "latest_confirmation_reasons": list(self._latest_confirmation_reasons),
+        }

@@ -108,3 +108,4 @@ python scripts/mt5_intelligent_demo_runner.py --duration-seconds 300 --execute-o
 ```
 
 The intelligent runner continues to require demo mode, limit volume to `0.01` lots, and refuse a new trade while a Gold position is already open.
+In shadow mode it also reports the decision funnel, including live sweeps, reversal candidates, and any confirmation or quality rejections, without changing the trading thresholds.
