@@ -62,3 +62,20 @@ python -m pytest
 ## Runtime Notes
 
 The live engine expects environment values such as `APEX_TWELVEDATA_KEY` and `DATABASE_URL`. For development, keep those in a local `.env` file and do not commit secrets.
+
+## MT5 Demo Safety Checks
+
+The MetaTrader 5 integration is currently limited to protected demo-account checks. Keep `APEX_MT5_DRY_RUN=true`, `APEX_MT5_REQUIRE_DEMO=true`, and a small `APEX_MAX_LOT` limit in the local `.env` file.
+
+```powershell
+python scripts/mt5_connection_check.py
+python scripts/mt5_market_observe.py
+python scripts/mt5_signal_readiness_observe.py
+python scripts/mt5_pipeline_dry_run.py
+```
+
+- `mt5_market_observe.py` reads broker quotes into the analytical layer only.
+- `mt5_signal_readiness_observe.py` reports real structure/liquidity readiness only; it does not invoke scoring, risk, or order routing.
+- `mt5_pipeline_dry_run.py` uses a synthetic candidate to verify capped risk and MT5 `order_check`; it does not send a trade.
+
+Automatic demo execution is intentionally not enabled. The current live setup-detection workflow still requires verified real analytical inputs in place of its placeholder discovery inputs before it can be considered for order routing.
