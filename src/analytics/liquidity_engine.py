@@ -5,7 +5,7 @@ Latency Profile: High frequency calculation matrices evaluating incoming microse
 """
 
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import structlog
 from src.core.domain.market_data import TickNode
 from src.core.domain.structure_models import SwingPoint, LiquidityPool, StructuralPointType
@@ -83,3 +83,24 @@ class LiquidityInterceptionEngine:
         # Retain unmitigated parameters within active memory structures
         self._pools = [p for p in self._pools if not p.is_swept]
         return detected_sweeps
+
+    def nearest_active_pool(self, price: float) -> Optional[Dict[str, Any]]:
+        """Return observation-only proximity data for the closest unswept pool."""
+        active_pools = [pool for pool in self._pools if not pool.is_swept]
+        if not active_pools:
+            return None
+
+        def pool_level(pool: LiquidityPool) -> float:
+            return pool.ceiling_price if pool.is_buy_side else pool.floor_price
+
+        nearest = min(active_pools, key=lambda pool: abs(pool_level(pool) - price))
+        level = pool_level(nearest)
+        return {
+            "active_pool_count": len(active_pools),
+            "pool_id": nearest.id,
+            "side": "BUY_SIDE_HIGH" if nearest.is_buy_side else "SELL_SIDE_LOW",
+            "level_price": level,
+            "distance": abs(level - price),
+            "is_equal_structure": nearest.is_equal_structure,
+            "touches": nearest.accumulated_touches,
+        }

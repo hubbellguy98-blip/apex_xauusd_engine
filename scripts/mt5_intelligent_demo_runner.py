@@ -164,6 +164,16 @@ async def run_strategy(
         print(f"confirmation_blocks={diagnostics['confirmation_blocks']}")
         print(f"quality_blocks={diagnostics['quality_blocks']}")
         print(f"cooldown_blocks={diagnostics['cooldown_blocks']}")
+        nearest_pool = diagnostics["nearest_active_pool"]
+        if nearest_pool:
+            print(f"active_liquidity_pools={nearest_pool['active_pool_count']}")
+            print(
+                f"nearest_liquidity_level={nearest_pool['side']} "
+                f"price={nearest_pool['level_price']:.2f} "
+                f"distance={nearest_pool['distance']:.2f}"
+            )
+        else:
+            print("active_liquidity_pools=0")
         if diagnostics["latest_confirmation_reasons"]:
             print(f"latest_confirmation_rejection={','.join(diagnostics['latest_confirmation_reasons'])}")
         print("status=NO_QUALIFIED_SIGNAL_BEFORE_TIMEOUT")

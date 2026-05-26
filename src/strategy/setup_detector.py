@@ -253,7 +253,9 @@ class MarketSetupOrchestrator(BaseSubsystem):
     @property
     def diagnostic_snapshot(self) -> Dict[str, Any]:
         """Expose live decision funnel counts without changing strategy outcomes."""
+        nearest_pool = self._liquidity_engine.nearest_active_pool(self._state_manager.snapshot.market.current_mid)
         return {
             **self._diagnostics,
             "latest_confirmation_reasons": list(self._latest_confirmation_reasons),
+            "nearest_active_pool": nearest_pool,
         }
