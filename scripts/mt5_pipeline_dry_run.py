@@ -82,12 +82,9 @@ async def main() -> int:
     try:
         summary = gateway.connection_summary()
         symbol = str(summary["symbol"])
-        tick = gateway._mt5.symbol_info_tick(symbol)
-        if tick is None:
-            raise RuntimeError(f"No tick available for {symbol}")
-
-        ask = float(tick.ask)
-        bid = float(tick.bid)
+        tick = gateway.read_current_tick()
+        ask = tick.ask
+        bid = tick.bid
         if ask <= 0.0 or bid <= 0.0:
             raise RuntimeError(f"Invalid quote received for {symbol}")
 

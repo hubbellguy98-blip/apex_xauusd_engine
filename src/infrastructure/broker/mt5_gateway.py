@@ -8,6 +8,7 @@ from typing import AsyncGenerator, List, Optional
 
 from src.core.domain.constants import OrderDirection
 from src.core.domain.execution_models import ExecutionReport, OrderRequest, OrderStatus, PositionSnapshot
+from src.core.domain.market_data import TickNode
 from src.execution.broker_abc import BrokerGatewayABC
 from src.infrastructure.broker.mt5_config import MT5GatewayConfig
 
@@ -20,6 +21,7 @@ class MT5BrokerGateway(BrokerGatewayABC):
         self._mt5 = None
         self._connected = False
         self._resolved_symbol: Optional[str] = None
+        self._tick_sequence = 0
 
     async def connect(self) -> None:
         try:
@@ -159,6 +161,32 @@ class MT5BrokerGateway(BrokerGatewayABC):
                 )
             )
         return snapshots
+
+    def read_current_tick(self) -> TickNode:
+        """Read the currently quoted broker tick without creating an order request."""
+        self._require_connected()
+        symbol = self._resolved_symbol or self.resolve_symbol(self._config.symbol)
+        raw_tick = self._mt5.symbol_info_tick(symbol)
+        if raw_tick is None:
+            raise RuntimeError(f"No tick available for {symbol}")
+
+        timestamp_msc = getattr(raw_tick, "time_msc", None)
+        timestamp = (
+            datetime.fromtimestamp(float(timestamp_msc) / 1000.0, tz=timezone.utc)
+            if timestamp_msc
+            else datetime.fromtimestamp(float(raw_tick.time), tz=timezone.utc)
+        )
+        self._tick_sequence += 1
+        return TickNode(
+            symbol=symbol,
+            timestamp=timestamp,
+            bid=float(raw_tick.bid),
+            ask=float(raw_tick.ask),
+            volume=int(getattr(raw_tick, "volume", 0)),
+            sequence_id=self._tick_sequence,
+            trace_id=f"MT5_TICK_{self._tick_sequence}",
+            correlation_id="MT5_READ_ONLY_STREAM",
+        )
 
     def connection_summary(self) -> dict[str, object]:
         self._require_connected()
