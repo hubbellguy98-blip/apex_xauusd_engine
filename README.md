@@ -78,7 +78,7 @@ python scripts/mt5_pipeline_dry_run.py
 - `mt5_signal_readiness_observe.py` warms structure/liquidity analysis from completed MT5 one-minute candles, then monitors live quote sweeps only; it does not invoke scoring, risk, or order routing.
 - `mt5_pipeline_dry_run.py` uses a synthetic candidate to verify capped risk and MT5 `order_check`; it does not send a trade.
 
-Automatic strategy-driven demo execution is intentionally not enabled. The current live setup-detection workflow still requires verified real analytical inputs in place of its placeholder discovery inputs before it can be considered for order routing.
+Automatic strategy-driven demo execution is intentionally not enabled by default. The intelligent runner now feeds broker candles and quotes through the core setup-detection, confirmation, scoring, and risk pipeline in shadow mode before any separately confirmed demo order can be routed.
 
 ## Minimal Demo Execution
 
@@ -95,7 +95,7 @@ python scripts/mt5_demo_auto_trigger.py --confirm-demo-auto ENABLE_ONE_DEMO_AUTO
 
 ## Intelligent Demo Runner
 
-`mt5_intelligent_demo_runner.py` replaces the temporary price-movement trigger with the first real-data strategy path: completed MT5 candles create structure and liquidity levels, live quotes detect sweeps, and existing confirmation, scoring, and capped-risk checks determine whether a trade qualifies.
+`mt5_intelligent_demo_runner.py` drives the original core strategy path: completed MT5 candles create structure and liquidity levels inside `MarketSetupOrchestrator`, live quotes detect sweeps, and existing confirmation, scoring, and capped-risk checks determine whether a trade qualifies.
 
 ```powershell
 python scripts/mt5_intelligent_demo_runner.py --duration-seconds 60

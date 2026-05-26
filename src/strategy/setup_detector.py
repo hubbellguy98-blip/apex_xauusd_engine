@@ -4,24 +4,27 @@ Responsibility: Coordinates signal aggregation, validates institutional intent c
 Latency Profile: Single-threaded async processing loop running via internal priority event channels.
 """
 
-import asyncio
+from collections import defaultdict, deque
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
+from typing import Any, Deque, Dict, List, Tuple
 import structlog
 
 from src.core.base_engine import BaseSubsystem
 from src.core.events.event_bus import EventBus
 from src.core.events.event_types import EngineEventType
 from src.core.domain.market_data import TickNode, CandleNode
-from src.core.domain.constants import OrderDirection, EventPriority
+from src.core.domain.constants import OrderDirection
+from src.core.domain.confirmation_models import ConfirmationSnapshot
 from src.strategy.state_manager import CentralRuntimeStateManager
 from src.strategy.confirmation_orchestrator import TradeConfirmationOrchestrator
 
 # Core Discovery Component Imports
+from src.analytics.liquidity_engine import LiquidityInterceptionEngine
+from src.analytics.session_engine import GoldSessionIntelligenceEngine
+from src.analytics.structure_engine import DeterministicStructureEngine
 from src.core.domain.setup_models import SetupOpportunityNode, SetupType, SetupQualityTier
 from src.strategy.setup_quality import InstitutionalSetupQualityClassifier
 from src.strategy.reversal_detectors import LiquiditySweepReversalDetector
-from src.strategy.continuation_detectors import TrendContinuationSetupDetector
 from src.strategy.setup_lifecycle import SetupLifecycleManager
 
 logger = structlog.get_logger()
@@ -38,12 +41,18 @@ class MarketSetupOrchestrator(BaseSubsystem):
         # Instantiate analytical sub-modules
         self._quality_classifier = InstitutionalSetupQualityClassifier()
         self._reversal_detector = LiquiditySweepReversalDetector()
-        self._continuation_detector = TrendContinuationSetupDetector()
         self._lifecycle_tracker = SetupLifecycleManager()
+        self._structure_engine = DeterministicStructureEngine("1m")
+        self._liquidity_engine = LiquidityInterceptionEngine("1m")
+        self._session_engine = GoldSessionIntelligenceEngine()
 
         # In-memory allocation arrays
         self._discovered_setups: Dict[str, SetupOpportunityNode] = {}
         self._cooldown_registry: Dict[str, datetime] = {}
+        self._candles_by_timeframe: Dict[str, Deque[CandleNode]] = defaultdict(lambda: deque(maxlen=50))
+        self._structural_pivots: List[Any] = []
+        self._qualified_candidates: List[Tuple[SetupOpportunityNode, ConfirmationSnapshot]] = []
+        self._warmup_sweeps_cleared = 0
         self._setup_counter = 0
 
     async def bootstrap(self) -> None:
@@ -56,11 +65,31 @@ class MarketSetupOrchestrator(BaseSubsystem):
         """Gracefully tears down active setup arrays."""
         self._discovered_setups.clear()
         self._cooldown_registry.clear()
+        self._candles_by_timeframe.clear()
+        self._structural_pivots.clear()
+        self._qualified_candidates.clear()
         logger.info("setup_orchestrator.terminated")
 
     async def on_tick_received(self, event: TickNode) -> None:
         """Processes real-time ticks to evaluate reversals and run active setup invalidation checks."""
-        current_time = event.timestamp
+        current_time = event.timestamp.replace(tzinfo=None)
+        session, _, _ = self._session_engine.evaluate_temporal_context(event.timestamp, event.mid)
+        await self._state_manager.commit_market_update(
+            {
+                "last_tick_time": current_time,
+                "current_ask": event.ask,
+                "current_bid": event.bid,
+                "current_mid": event.mid,
+                "current_spread": event.spread,
+                "accumulated_tick_count": self._state_manager.snapshot.market.accumulated_tick_count + 1,
+                "is_synchronized": True,
+            },
+            event.correlation_id or f"SETUP_TICK_{event.sequence_id}",
+        )
+        await self._state_manager.commit_session_update(
+            {"current_phase": session, "last_phase_transition": current_time},
+            event.correlation_id or f"SETUP_SESSION_{event.sequence_id}",
+        )
         state_snap = self._state_manager.snapshot
 
         # 1. Run Lifecycle Invalidation and Expiration Verification Scans
@@ -79,39 +108,51 @@ class MarketSetupOrchestrator(BaseSubsystem):
         for s_id in expired_ids:
             del self._discovered_setups[s_id]
 
-        # 2. Evaluate Reversal Setup Configurations
-        # Extract operational infrastructure values from mocked lists (populated via analytical pipes)
-        mock_pools = []  # Extracted via Phase 7 pipeline models
-        mock_pivots = []
-
+        # 2. Evaluate real liquidity sweeps against structural pools learned from 1m candles.
+        swept_pools = self._liquidity_engine.evaluate_tick_sweeps(event)
+        if not swept_pools or not self._candles_by_timeframe["1m"]:
+            return
         is_reversal, direction, entry, sl, tp = self._reversal_detector.evaluate_sweep_reversal(
-            event, mock_pools, mock_pivots, state_snap
+            event, [pool for pool, _ in swept_pools], self._structural_pivots, state_snap
         )
 
         if is_reversal:
             await self._process_discovered_candidate(
-                SetupType.LIQUIDITY_SWEEP_REVERSAL, direction, entry, sl, tp, event, "1m"
+                SetupType.LIQUIDITY_SWEEP_REVERSAL,
+                direction,
+                entry,
+                sl,
+                tp,
+                self._candles_by_timeframe["1m"][-1],
+                "1m",
             )
 
     async def on_candle_evacuation(self, event: CandleNode) -> None:
-        """Evaluates continuation setups when a candle closes."""
-        if event.timeframe != "15m":
+        """Stores closed bars and converts real 1m structure into liquidity pools."""
+        self._candles_by_timeframe[event.timeframe].append(event)
+        if event.timeframe != "1m":
             return
-            
-        state_snap = self._state_manager.snapshot
-        mock_blocks = []  # Populated via core structure tracking models
-        mock_fvgs = []
+        new_pivots, _ = self._structure_engine.ingest_candle_close(event)
+        for pivot in new_pivots:
+            self._liquidity_engine.register_structural_pivot_pool(pivot)
+        self._structural_pivots.extend(new_pivots)
 
-        # Evaluate Order Block Retest signals
-        is_ob, direction, entry, sl, tp = self._continuation_detector.evaluate_ob_continuation(
-            event, mock_blocks, state_snap
-        )
-        if is_ob:
-            await self._process_discovered_candidate(
-                SetupType.ORDER_BLOCK_CONTINUATION, direction, entry, sl, tp, event, "15m"
+    async def seed_closed_candle(self, event: CandleNode) -> None:
+        """Warm analytical state without emitting signals from already completed history."""
+        if event.timeframe == "1m":
+            close_tick = TickNode(
+                symbol=event.symbol,
+                timestamp=event.end_time,
+                bid=event.close_p,
+                ask=event.close_p,
+                volume=event.volume,
+                sequence_id=event.sequence_id,
+                correlation_id="MT5_HISTORY_WARMUP",
             )
+            self._warmup_sweeps_cleared += len(self._liquidity_engine.evaluate_tick_sweeps(close_tick))
+        await self.on_candle_evacuation(event)
 
-    async def _process_discovered_candidate(self, setup_type: SetupType, direction: OrderDirection, entry: float, sl: float, tp: float, trigger_source: Any, timeframe: str) -> None:
+    async def _process_discovered_candidate(self, setup_type: SetupType, direction: OrderDirection, entry: float, sl: float, tp: float, trigger_source: CandleNode, timeframe: str) -> None:
         """Runs the validation sequence, grades setup quality, and publishes approved setup nodes."""
         
         # 1. Enforce Cooldown Protection Gates to Prevent Signal Spam
@@ -121,11 +162,10 @@ class MarketSetupOrchestrator(BaseSubsystem):
             if current_time < self._cooldown_registry[cooldown_key]:
                 return  # Block duplicate signals during active cooldown windows
 
-        # 2. Trigger Cross-Component Confirmation Verification Checks
-        mock_bias = {"4h": "BULLISH", "1h": "BULLISH", "15m": "BULLISH", "1m": "BULLISH"}
+        # 2. Trigger confirmation using directional bias learned from received closed candles.
+        directional_bias = self.directional_bias_matrix
         is_confirmed, confirmation_snap = await self._confirmation_engine.process_candidate_setup(
-            direction, current_time, trigger_source if isinstance(trigger_source, CandleNode) else self._state_manager.snapshot.market.last_tick_time, # Safe primitive fallbacks
-            mock_bias, 3.0
+            direction, current_time, trigger_source, directional_bias, 3.0
         )
 
         if not is_confirmed:
@@ -158,8 +198,36 @@ class MarketSetupOrchestrator(BaseSubsystem):
         # Update system caches and activate the cooldown firewall
         self._discovered_setups[setup_id] = opportunity_node
         self._cooldown_registry[cooldown_key] = current_time + timedelta(minutes=15) # 15-minute cooldown per strategy configuration
+        self._qualified_candidates.append((opportunity_node, confirmation_snap))
 
         logger.info("setup_orchestrator.signal_finalized", id=setup_id, tier=quality_tier.value, rr=f"{estimated_rr:.2f}")
-        
-        # Publish the finalized setup node to the central event bus
-        # This notifies downstream execution managers (Phase 11/12) to handle position entry routing
+
+    @property
+    def directional_bias_matrix(self) -> Dict[str, str]:
+        """Build directional bias using the oldest/newest closed bar held per timeframe."""
+        matrix: Dict[str, str] = {}
+        for timeframe in ("4h", "1h", "15m", "1m"):
+            candles = self._candles_by_timeframe.get(timeframe, deque())
+            if len(candles) < 2:
+                matrix[timeframe] = "NEUTRAL"
+            elif candles[-1].close_p > candles[0].close_p:
+                matrix[timeframe] = "BULLISH"
+            elif candles[-1].close_p < candles[0].close_p:
+                matrix[timeframe] = "BEARISH"
+            else:
+                matrix[timeframe] = "NEUTRAL"
+        return matrix
+
+    def drain_qualified_candidates(self) -> List[Tuple[SetupOpportunityNode, ConfirmationSnapshot]]:
+        """Return newly confirmed setup nodes for downstream scoring and risk processing."""
+        candidates = list(self._qualified_candidates)
+        self._qualified_candidates.clear()
+        return candidates
+
+    @property
+    def tracked_structural_pivots(self) -> int:
+        return len(self._structural_pivots)
+
+    @property
+    def warmup_sweeps_cleared(self) -> int:
+        return self._warmup_sweeps_cleared
