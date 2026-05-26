@@ -92,3 +92,19 @@ python scripts/mt5_demo_auto_trigger.py --confirm-demo-auto ENABLE_ONE_DEMO_AUTO
 - `mt5_demo_trade_smoke_test.py` sends one requested `0.01` lot demo Gold trade.
 - `mt5_demo_auto_trigger.py` waits for a small live price movement, then sends at most one `0.01` lot demo Gold trade.
 - The automatic trigger refuses to submit while any Gold position is already open.
+
+## Intelligent Demo Runner
+
+`mt5_intelligent_demo_runner.py` replaces the temporary price-movement trigger with the first real-data strategy path: completed MT5 candles create structure and liquidity levels, live quotes detect sweeps, and existing confirmation, scoring, and capped-risk checks determine whether a trade qualifies.
+
+```powershell
+python scripts/mt5_intelligent_demo_runner.py --duration-seconds 60
+```
+
+The default command is shadow-only and cannot submit an order. After observing qualified signals, one explicitly confirmed demo execution can be enabled with:
+
+```powershell
+python scripts/mt5_intelligent_demo_runner.py --duration-seconds 300 --execute-one-demo --confirm-execution ENABLE_ONE_INTELLIGENT_DEMO_TRADE
+```
+
+The intelligent runner continues to require demo mode, limit volume to `0.01` lots, and refuse a new trade while a Gold position is already open.
