@@ -78,4 +78,17 @@ python scripts/mt5_pipeline_dry_run.py
 - `mt5_signal_readiness_observe.py` warms structure/liquidity analysis from completed MT5 one-minute candles, then monitors live quote sweeps only; it does not invoke scoring, risk, or order routing.
 - `mt5_pipeline_dry_run.py` uses a synthetic candidate to verify capped risk and MT5 `order_check`; it does not send a trade.
 
-Automatic demo execution is intentionally not enabled. The current live setup-detection workflow still requires verified real analytical inputs in place of its placeholder discovery inputs before it can be considered for order routing.
+Automatic strategy-driven demo execution is intentionally not enabled. The current live setup-detection workflow still requires verified real analytical inputs in place of its placeholder discovery inputs before it can be considered for order routing.
+
+## Minimal Demo Execution
+
+The following scripts enable explicitly confirmed demo-account trades only. They require `APEX_MT5_DRY_RUN=true`, `APEX_MT5_REQUIRE_DEMO=true`, and `APEX_MAX_LOT=0.01` in `.env`.
+
+```powershell
+python scripts/mt5_demo_trade_smoke_test.py --confirm-demo-order EXECUTE_ONE_DEMO_ORDER --direction BUY
+python scripts/mt5_demo_auto_trigger.py --confirm-demo-auto ENABLE_ONE_DEMO_AUTO_TRADE
+```
+
+- `mt5_demo_trade_smoke_test.py` sends one requested `0.01` lot demo Gold trade.
+- `mt5_demo_auto_trigger.py` waits for a small live price movement, then sends at most one `0.01` lot demo Gold trade.
+- The automatic trigger refuses to submit while any Gold position is already open.
