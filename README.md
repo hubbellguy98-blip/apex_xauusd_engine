@@ -75,7 +75,7 @@ python scripts/mt5_pipeline_dry_run.py
 ```
 
 - `mt5_market_observe.py` reads broker quotes into the analytical layer only.
-- `mt5_signal_readiness_observe.py` reports real structure/liquidity readiness only; it does not invoke scoring, risk, or order routing.
+- `mt5_signal_readiness_observe.py` warms structure/liquidity analysis from completed MT5 one-minute candles, then monitors live quote sweeps only; it does not invoke scoring, risk, or order routing.
 - `mt5_pipeline_dry_run.py` uses a synthetic candidate to verify capped risk and MT5 `order_check`; it does not send a trade.
 
 Automatic demo execution is intentionally not enabled. The current live setup-detection workflow still requires verified real analytical inputs in place of its placeholder discovery inputs before it can be considered for order routing.

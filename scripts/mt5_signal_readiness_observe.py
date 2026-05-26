@@ -11,10 +11,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.analytics.candle_builder import IncrementalCandleBuilder
 from src.analytics.liquidity_engine import LiquidityInterceptionEngine
 from src.analytics.session_engine import GoldSessionIntelligenceEngine
 from src.analytics.structure_engine import DeterministicStructureEngine
+from src.core.domain.market_data import TickNode
 from src.infrastructure.broker.mt5_config import load_mt5_config
 from src.infrastructure.broker.mt5_gateway import MT5BrokerGateway
 from src.strategy.reversal_detectors import LiquiditySweepReversalDetector
@@ -24,7 +24,7 @@ from src.strategy.state_manager import CentralRuntimeStateManager
 async def observe_signal_readiness(
     duration_seconds: float,
     poll_interval_seconds: float,
-    analysis_candle_seconds: int,
+    warmup_bars: int,
 ) -> int:
     config = load_mt5_config(ROOT / ".env")
     if not config.dry_run or not config.require_demo:
@@ -33,14 +33,14 @@ async def observe_signal_readiness(
     state_manager = CentralRuntimeStateManager()
     gateway = MT5BrokerGateway(config)
     session_engine = GoldSessionIntelligenceEngine()
-    structure_engine = DeterministicStructureEngine("diagnostic")
-    liquidity_engine = LiquidityInterceptionEngine("diagnostic")
+    structure_engine = DeterministicStructureEngine("1m")
+    liquidity_engine = LiquidityInterceptionEngine("1m")
     reversal_detector = LiquiditySweepReversalDetector()
 
     polls = 0
     unique_quotes = 0
-    closed_candles = 0
     pivots = []
+    historical_close_sweeps = 0
     sweeps = 0
     potential_candidates = []
     current_session = "UNINITIALIZED"
@@ -51,7 +51,23 @@ async def observe_signal_readiness(
     await gateway.connect()
     try:
         symbol = str(gateway.connection_summary()["symbol"])
-        candle_builder = IncrementalCandleBuilder(symbol, "diagnostic", analysis_candle_seconds)
+        historical_candles = gateway.read_recent_closed_candles(timeframe_minutes=1, count=warmup_bars)
+        for candle in historical_candles:
+            close_tick = TickNode(
+                symbol=candle.symbol,
+                timestamp=candle.end_time,
+                bid=candle.close_p,
+                ask=candle.close_p,
+                sequence_id=candle.sequence_id,
+                trace_id=f"HISTORY_CLOSE_{candle.sequence_id}",
+                correlation_id="MT5_CLOSED_CANDLE_WARMUP",
+            )
+            historical_close_sweeps += len(liquidity_engine.evaluate_tick_sweeps(close_tick))
+            new_pivots, _ = structure_engine.ingest_candle_close(candle)
+            for pivot in new_pivots:
+                liquidity_engine.register_structural_pivot_pool(pivot)
+            pivots.extend(new_pivots)
+
         started = asyncio.get_running_loop().time()
 
         while asyncio.get_running_loop().time() - started < duration_seconds:
@@ -102,24 +118,17 @@ async def observe_signal_readiness(
                         (direction.value, entry, stop_loss, take_profit, killzone_active)
                     )
 
-            closed, _ = candle_builder.process_tick(tick)
-            if closed is not None:
-                closed_candles += 1
-                new_pivots, _ = structure_engine.ingest_candle_close(closed)
-                for pivot in new_pivots:
-                    liquidity_engine.register_structural_pivot_pool(pivot)
-                pivots.extend(new_pivots)
-
             await asyncio.sleep(poll_interval_seconds)
 
         print("MT5 signal readiness - READ ONLY; NO SCORING, RISK, OR ORDER PATH INVOKED")
-        print("analysis_window=DIAGNOSTIC_ONLY_NOT_A_TRADING_TIMEFRAME")
+        print("analysis_timeframe=1m_closed_broker_candles_plus_live_quote_monitor")
         print(f"symbol={symbol}")
+        print(f"historical_bars_processed={len(historical_candles)}")
         print(f"polls={polls}")
         print(f"unique_quotes_processed={unique_quotes}")
-        print(f"closed_diagnostic_candles={closed_candles}")
         print(f"structural_pivots={len(pivots)}")
-        print(f"liquidity_sweeps={sweeps}")
+        print(f"historical_close_sweeps={historical_close_sweeps}")
+        print(f"live_liquidity_sweeps={sweeps}")
         print(f"potential_reversal_candidates={len(potential_candidates)}")
         print(f"session={current_session}")
         print(f"killzone_active={killzone_active}")
@@ -140,10 +149,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Observe analytical signal readiness using MT5 Gold quotes only.")
     parser.add_argument("--duration-seconds", type=float, default=20.0)
     parser.add_argument("--poll-interval-seconds", type=float, default=0.25)
-    parser.add_argument("--analysis-candle-seconds", type=int, default=2)
+    parser.add_argument("--warmup-bars", type=int, default=50)
     args = parser.parse_args()
-    if args.duration_seconds <= 0 or args.poll_interval_seconds <= 0 or args.analysis_candle_seconds <= 0:
-        parser.error("duration, interval, and diagnostic candle window must all be positive.")
+    if args.duration_seconds <= 0 or args.poll_interval_seconds <= 0 or args.warmup_bars <= 0:
+        parser.error("duration, interval, and warmup bar count must all be positive.")
     return args
 
 
@@ -154,7 +163,7 @@ if __name__ == "__main__":
             observe_signal_readiness(
                 parsed.duration_seconds,
                 parsed.poll_interval_seconds,
-                parsed.analysis_candle_seconds,
+                parsed.warmup_bars,
             )
         )
     )

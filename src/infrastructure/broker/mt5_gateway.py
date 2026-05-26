@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator, List, Optional
 
 from src.core.domain.constants import OrderDirection
 from src.core.domain.execution_models import ExecutionReport, OrderRequest, OrderStatus, PositionSnapshot
-from src.core.domain.market_data import TickNode
+from src.core.domain.market_data import CandleNode, TickNode
 from src.execution.broker_abc import BrokerGatewayABC
 from src.infrastructure.broker.mt5_config import MT5GatewayConfig
 
@@ -187,6 +187,53 @@ class MT5BrokerGateway(BrokerGatewayABC):
             trace_id=f"MT5_TICK_{self._tick_sequence}",
             correlation_id="MT5_READ_ONLY_STREAM",
         )
+
+    def read_recent_closed_candles(self, timeframe_minutes: int = 1, count: int = 50) -> List[CandleNode]:
+        """Read recent completed broker candles for analytical warmup only."""
+        self._require_connected()
+        if count <= 0:
+            raise ValueError("Candle history count must be positive.")
+
+        mt5 = self._mt5
+        timeframe_map = {
+            1: mt5.TIMEFRAME_M1,
+            5: mt5.TIMEFRAME_M5,
+            15: mt5.TIMEFRAME_M15,
+            60: mt5.TIMEFRAME_H1,
+            240: mt5.TIMEFRAME_H4,
+        }
+        if timeframe_minutes not in timeframe_map:
+            raise ValueError("Supported MT5 candle timeframes are 1, 5, 15, 60, and 240 minutes.")
+
+        symbol = self._resolved_symbol or self.resolve_symbol(self._config.symbol)
+        raw_rates = mt5.copy_rates_from_pos(symbol, timeframe_map[timeframe_minutes], 1, count)
+        if raw_rates is None:
+            raise RuntimeError(f"MT5 returned no closed candle history for {symbol}.")
+
+        timeframe_label = f"{timeframe_minutes}m" if timeframe_minutes < 60 else f"{timeframe_minutes // 60}h"
+        candles: List[CandleNode] = []
+        ordered_rates = sorted(raw_rates, key=lambda rate: float(rate["time"]))
+        for sequence, rate in enumerate(ordered_rates, start=1):
+            start_time = datetime.fromtimestamp(float(rate["time"]), tz=timezone.utc)
+            candles.append(
+                CandleNode(
+                    symbol=symbol,
+                    timeframe=timeframe_label,
+                    start_time=start_time,
+                    end_time=start_time + timedelta(minutes=timeframe_minutes),
+                    open_p=float(rate["open"]),
+                    high_p=float(rate["high"]),
+                    low_p=float(rate["low"]),
+                    close_p=float(rate["close"]),
+                    volume=int(rate["tick_volume"]),
+                    ticks_count=int(rate["tick_volume"]),
+                    is_closed=True,
+                    sequence_id=sequence,
+                    trace_id=f"MT5_CANDLE_{timeframe_label}_{sequence}",
+                    correlation_id="MT5_READ_ONLY_HISTORY",
+                )
+            )
+        return candles
 
     def connection_summary(self) -> dict[str, object]:
         self._require_connected()
