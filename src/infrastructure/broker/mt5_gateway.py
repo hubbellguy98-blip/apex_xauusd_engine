@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator, List, Optional
 
@@ -15,7 +16,9 @@ from src.core.domain.execution_models import (
     PositionSnapshot,
 )
 from src.core.domain.market_data import CandleNode, TickNode
+from src.core.domain.risk_models import BrokerSizingSpecification, PreSubmissionRiskAssessment
 from src.execution.broker_abc import BrokerGatewayABC
+from src.execution.pre_submission_guard import PreSubmissionRiskGuard
 from src.infrastructure.broker.mt5_config import MT5GatewayConfig
 
 
@@ -100,21 +103,82 @@ class MT5BrokerGateway(BrokerGatewayABC):
         )
 
     async def route_order_submission(self, request: OrderRequest) -> ExecutionReport:
+        try:
+            tick = self.read_current_tick()
+        except RuntimeError as exc:
+            if "No tick available" in str(exc):
+                return self._reject(request, "SYMBOL_TICK_UNAVAILABLE")
+            raise
+        live_entry_price = tick.ask if request.direction == OrderDirection.BUY else tick.bid
+        routed_request = replace(request, entry_price=live_entry_price)
+        return self._submit_at_validated_quote(routed_request, live_entry_price)
+
+    async def route_revalidated_order_submission(
+        self,
+        request: OrderRequest,
+        maximum_currency_risk: float,
+        maximum_spread_price: float,
+        maximum_quote_age_seconds: float = 5.0,
+    ) -> tuple[ExecutionReport, PreSubmissionRiskAssessment]:
+        """Submit only if the latest executable quote still respects approved risk."""
+        self._require_connected()
+        volume = self.normalize_order_volume(float(request.quantity_lots))
+        try:
+            tick = self.read_current_tick()
+        except RuntimeError as exc:
+            if "No tick available" not in str(exc):
+                raise
+            assessment = PreSubmissionRiskAssessment(
+                is_approved=False,
+                live_entry_price=request.entry_price,
+                normalized_lots=volume,
+                currency_risk=0.0,
+                maximum_currency_risk=maximum_currency_risk,
+                spread_price=0.0,
+                quote_age_seconds=float("inf"),
+                rejection_reasons=["BROKER_EXECUTABLE_QUOTE_UNAVAILABLE"],
+            )
+            return self._reject(request, "PRE_SUBMISSION_REVALIDATION_FAILED: BROKER_EXECUTABLE_QUOTE_UNAVAILABLE"), assessment
+        live_entry_price = tick.ask if request.direction == OrderDirection.BUY else tick.bid
+        try:
+            currency_risk = (
+                self.calculate_stop_loss_currency_per_lot(request.direction, live_entry_price, request.stop_loss)
+                * volume
+                if volume > 0.0
+                else 0.0
+            )
+        except (RuntimeError, ValueError):
+            currency_risk = 0.0
+        assessment = PreSubmissionRiskGuard(
+            maximum_spread_price=maximum_spread_price,
+            maximum_quote_age_seconds=maximum_quote_age_seconds,
+        ).evaluate(
+            direction=request.direction,
+            live_entry_price=live_entry_price,
+            stop_loss=request.stop_loss,
+            take_profit=request.take_profit,
+            normalized_lots=volume,
+            currency_risk=currency_risk,
+            maximum_currency_risk=maximum_currency_risk,
+            spread_price=tick.spread,
+            quote_timestamp=tick.timestamp,
+        )
+        if not assessment.is_approved:
+            reason = "PRE_SUBMISSION_REVALIDATION_FAILED: " + ",".join(assessment.rejection_reasons)
+            return self._reject(request, reason), assessment
+        routed_request = replace(request, entry_price=live_entry_price, quantity_lots=volume)
+        return self._submit_at_validated_quote(routed_request, live_entry_price), assessment
+
+    def _submit_at_validated_quote(self, request: OrderRequest, price: float) -> ExecutionReport:
         self._require_connected()
         mt5 = self._mt5
         symbol = self._resolved_symbol or self.resolve_symbol(request.symbol)
         if mt5.positions_get(symbol=symbol):
             return self._reject(request, "ACTIVE_GOLD_POSITION_EXISTS_SINGLE_TRADE_LIMIT")
-        volume = min(float(request.quantity_lots), self._config.max_lot)
+        volume = self.normalize_order_volume(float(request.quantity_lots))
         if volume <= 0:
-            return self._reject(request, "ORDER_VOLUME_ZERO_OR_NEGATIVE")
-
-        tick = mt5.symbol_info_tick(symbol)
-        if tick is None:
-            return self._reject(request, "SYMBOL_TICK_UNAVAILABLE")
-
+            return self._reject(request, "ORDER_VOLUME_BELOW_BROKER_MINIMUM_OR_ZERO")
         order_type = mt5.ORDER_TYPE_BUY if request.direction == OrderDirection.BUY else mt5.ORDER_TYPE_SELL
-        price = float(tick.ask if request.direction == OrderDirection.BUY else tick.bid)
         payload = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
@@ -148,6 +212,66 @@ class MT5BrokerGateway(BrokerGatewayABC):
         success_codes = {getattr(mt5, "TRADE_RETCODE_DONE", 10009), getattr(mt5, "TRADE_RETCODE_PLACED", 10008)}
         status = OrderStatus.FILLED if getattr(result, "retcode", None) in success_codes else OrderStatus.REJECTED
         return self._from_mt5_result(request, result, status, dry_run=False)
+
+    def read_sizing_specification(self) -> BrokerSizingSpecification:
+        """Return account and broker volume constraints used for stop-risk sizing."""
+        self._require_connected()
+        symbol = self._resolved_symbol or self.resolve_symbol(self._config.symbol)
+        account = self._mt5.account_info()
+        info = self._mt5.symbol_info(symbol)
+        if account is None or info is None:
+            raise RuntimeError("MT5 account or symbol sizing information is unavailable.")
+
+        equity = float(getattr(account, "equity", 0.0))
+        volume_min = float(getattr(info, "volume_min", 0.0))
+        volume_step = float(getattr(info, "volume_step", 0.0))
+        volume_max = float(getattr(info, "volume_max", 0.0))
+        if equity <= 0.0 or volume_min <= 0.0 or volume_step <= 0.0 or volume_max <= 0.0:
+            raise RuntimeError("MT5 returned invalid equity or symbol volume constraints.")
+        return BrokerSizingSpecification(
+            symbol=symbol,
+            account_equity=equity,
+            account_currency=str(getattr(account, "currency", "")),
+            volume_min=volume_min,
+            volume_step=volume_step,
+            volume_max=volume_max,
+        )
+
+    def calculate_stop_loss_currency_per_lot(
+        self,
+        direction: OrderDirection,
+        entry_price: float,
+        stop_loss: float,
+    ) -> float:
+        """Calculate one-lot stop loss in account currency using the active MT5 account."""
+        self._require_connected()
+        if direction == OrderDirection.BUY and stop_loss >= entry_price:
+            raise ValueError("BUY protective stop must be below entry.")
+        if direction == OrderDirection.SELL and stop_loss <= entry_price:
+            raise ValueError("SELL protective stop must be above entry.")
+
+        symbol = self._resolved_symbol or self.resolve_symbol(self._config.symbol)
+        order_type = self._mt5.ORDER_TYPE_BUY if direction == OrderDirection.BUY else self._mt5.ORDER_TYPE_SELL
+        estimated_profit = self._mt5.order_calc_profit(order_type, symbol, 1.0, float(entry_price), float(stop_loss))
+        if estimated_profit is None:
+            raise RuntimeError("MT5 could not calculate stop-loss currency exposure.")
+        loss = -float(estimated_profit)
+        if loss <= 0.0:
+            raise RuntimeError("MT5 stop-loss calculation did not produce an adverse currency loss.")
+        return loss
+
+    def normalize_order_volume(self, requested_lots: float) -> float:
+        """Floor order volume to broker step while respecting configured and broker caps."""
+        specification = self.read_sizing_specification()
+        capped = min(float(requested_lots), self._config.max_lot, specification.volume_max)
+        if capped < specification.volume_min:
+            return 0.0
+        from decimal import Decimal, ROUND_FLOOR
+
+        step = Decimal(str(specification.volume_step))
+        normalized_steps = (Decimal(str(capped)) / step).to_integral_value(rounding=ROUND_FLOOR)
+        normalized = float(normalized_steps * step)
+        return normalized if normalized >= specification.volume_min else 0.0
 
     async def stream_execution_lifecycle_events(self) -> AsyncGenerator[ExecutionReport, None]:
         while self._connected:
@@ -330,7 +454,7 @@ class MT5BrokerGateway(BrokerGatewayABC):
         retcode = getattr(result, "retcode", 0)
         order_id = str(getattr(result, "order", "CHECK_ONLY" if dry_run else "UNKNOWN"))
         price = float(getattr(result, "price", request.entry_price) or request.entry_price)
-        volume = min(float(request.quantity_lots), self._config.max_lot)
+        volume = self.normalize_order_volume(float(request.quantity_lots))
         comment = getattr(result, "comment", "")
         return ExecutionReport(
             execution_id=f"MT5_{retcode}_{request.client_order_id}",

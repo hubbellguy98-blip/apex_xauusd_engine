@@ -5,7 +5,7 @@ Latency Profile: Simulates network latency metrics inside independent task track
 """
 
 from datetime import datetime
-from typing import List, Dict, AsyncGenerator
+from typing import List, Optional
 import structlog
 from src.core.domain.execution_models import OrderRequest, ExecutionReport, PositionSnapshot, OrderStatus
 from src.backtesting.backtest_config import BacktestConfig
@@ -18,9 +18,9 @@ class BacktestExecutionSimulator:
 
     __slots__ = ("_config", "_fill_engine", "_pending_queue", "_order_history")
 
-    def __init__(self, config: BacktestConfig, fill_engine: BacktestFillEngine) -> None:
+    def __init__(self, config: BacktestConfig, fill_engine: Optional[BacktestFillEngine] = None) -> None:
         self._config = config
-        self._fill_engine = fill_engine
+        self._fill_engine = fill_engine or BacktestFillEngine.from_config(config)
         self._pending_queue: List[OrderRequest] = []
         self._order_history: List[ExecutionReport] = []
 

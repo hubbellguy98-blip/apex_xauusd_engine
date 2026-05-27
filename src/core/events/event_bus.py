@@ -6,6 +6,7 @@ Latency Profile: Async non-blocking dispatch path utilizing priority execution l
 
 import asyncio
 from collections import defaultdict
+from itertools import count
 from typing import Callable, Coroutine, Any, Dict, List
 from src.core.events.event_types import EngineEventType
 from src.core.domain.data_primitives import BaseEvent
@@ -16,9 +17,15 @@ logger = structlog.get_logger()
 class EventBus:
     """High-speed internal event distribution array for non-blocking processing loops."""
     
-    def __init__(self) -> None:
+    def __init__(self, max_queue_size: int = 10000) -> None:
+        if max_queue_size <= 0:
+            raise ValueError("Event bus queue size must be positive.")
         self._subscribers: Dict[EngineEventType, List[Callable[[Any], Coroutine[Any, Any, None]]]] = defaultdict(list)
-        self._priority_queue: asyncio.PriorityQueue[tuple[int, BaseEvent]] = asyncio.PriorityQueue()
+        self._priority_queue: asyncio.PriorityQueue[tuple[int, int, EngineEventType, BaseEvent]] = asyncio.PriorityQueue(
+            maxsize=max_queue_size
+        )
+        self._publish_sequence = count()
+        self._handler_failure_count = 0
         self._processing_task: asyncio.Task[None] | None = None
         self._is_running: bool = False
 
@@ -49,24 +56,40 @@ class EventBus:
         """Pushes an event payload into the priority distribution queue."""
         if not self._is_running:
             raise RuntimeError("Cannot publish events into an inactive routing engine context.")
-        # Queue item follows shape: (priority_integer_value, payload)
-        await self._priority_queue.put((event_payload.priority.value, (event_type, event_payload)))
+        # Sequence preserves deterministic FIFO ordering when priorities match.
+        await self._priority_queue.put(
+            (event_payload.priority.value, next(self._publish_sequence), event_type, event_payload)
+        )
 
     async def _drain_queue_loop(self) -> None:
         """Internal worker task loop that dispatches items based on priority rules."""
         while self._is_running:
             try:
-                priority, (event_type, event_payload) = await self._priority_queue.get()
+                _priority, _sequence, event_type, event_payload = await self._priority_queue.get()
                 handlers = self._subscribers.get(event_type, [])
                 
                 if handlers:
-                    # Execute all subscribed handlers concurrently
-                    await asyncio.gather(
+                    results = await asyncio.gather(
                         *(handler(event_payload) for handler in handlers),
                         return_exceptions=True
                     )
+                    for handler, result in zip(handlers, results):
+                        if isinstance(result, BaseException):
+                            self._handler_failure_count += 1
+                            logger.error(
+                                "event_bus.handler_failure",
+                                event_type=event_type.value,
+                                handler=getattr(handler, "__name__", repr(handler)),
+                                error=str(result),
+                            )
                 self._priority_queue.task_done()
             except asyncio.CancelledError:
                 break
             except Exception as ex:
-                logger.error("event_bus.dispatch_failure", error=str(ex), event_type=event_type)
+                self._handler_failure_count += 1
+                logger.error("event_bus.dispatch_failure", error=str(ex))
+
+    @property
+    def handler_failure_count(self) -> int:
+        """Return observed subscriber/dispatch failures for health monitoring."""
+        return self._handler_failure_count

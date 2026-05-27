@@ -31,6 +31,32 @@ class PositionSizingPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class BrokerSizingSpecification:
+    """Broker/account values required to convert a stop into account-currency risk."""
+
+    symbol: str
+    account_equity: float
+    account_currency: str
+    volume_min: float
+    volume_step: float
+    volume_max: float
+
+
+@dataclass(frozen=True, slots=True)
+class PreSubmissionRiskAssessment:
+    """Final broker-quote safety result immediately before a routed order."""
+
+    is_approved: bool
+    live_entry_price: float
+    normalized_lots: float
+    currency_risk: float
+    maximum_currency_risk: float
+    spread_price: float
+    quote_age_seconds: float
+    rejection_reasons: List[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
 class RiskEvaluationSnapshot:
     timestamp: datetime
     is_approved: bool

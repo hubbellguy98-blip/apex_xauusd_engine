@@ -36,13 +36,14 @@ class RiskManagementOrchestrator(BaseSubsystem):
         event_bus: EventBus,
         state_manager: CentralRuntimeStateManager,
         maximum_lots: Optional[float] = None,
+        position_sizer: Optional[InstitutionalPositionSizer] = None,
     ) -> None:
         super().__init__("RiskManagementOrchestrator")
         self._event_bus = event_bus
         self._state_manager = state_manager
 
         # Instantiate composite verification modules
-        self._sizer = InstitutionalPositionSizer(maximum_lots=maximum_lots)
+        self._sizer = position_sizer or InstitutionalPositionSizer(maximum_lots=maximum_lots)
         self._stop_engine = DynamicStructuralStopEngine()
         self._rr_validator = AsymmetricOpportunityValidator()
         self._drawdown_firewall = CapitalProtectionDrawdownEngine()
@@ -82,7 +83,11 @@ class RiskManagementOrchestrator(BaseSubsystem):
             rejection_reasons.append(rr_message)
 
         # 4. Execute Institutional Capital Position Sizing Routines
-        sizing_payload = self._sizer.calculate_lot_size(setup, state_snapshot, quality_score_multiplier)
+        try:
+            sizing_payload = self._sizer.calculate_lot_size(setup, state_snapshot, quality_score_multiplier)
+        except (RuntimeError, ValueError) as exc:
+            sizing_payload = PositionSizingPayload(calculated_lots=0.0, risk_percentage_applied=0.0, currency_risk=0.0)
+            rejection_reasons.append(f"POSITION_SIZING_CALCULATION_FAILED: {exc}")
         if sizing_payload.calculated_lots <= 0.0:
             rejection_reasons.append("POSITION_SIZING_GENERATED_LOT_ZERO_ALLOCATION")
 

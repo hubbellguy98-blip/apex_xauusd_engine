@@ -19,8 +19,10 @@ from src.core.events.event_bus import EventBus
 from src.execution.position_tracker import (
     InstitutionalTradeLifecycleManager,
     ManagedTradePlan,
+    ManagedTradePlanReconciler,
     ManagedTradePlanStore,
 )
+from src.execution.position_sizer import InstitutionalPositionSizer
 from src.execution.risk_firewall import RiskManagementOrchestrator
 from src.infrastructure.broker.mt5_config import load_mt5_config
 from src.infrastructure.broker.mt5_gateway import MT5BrokerGateway
@@ -32,6 +34,8 @@ from src.strategy.state_manager import CentralRuntimeStateManager
 EXECUTION_CONFIRMATION = "ENABLE_ONE_INTELLIGENT_DEMO_TRADE"
 MANAGEMENT_CONFIRMATION = "ENABLE_BUFFERED_DEMO_TRAILING"
 MAXIMUM_VOLUME = 0.01
+MAXIMUM_ENTRY_SPREAD_PRICE = 0.35
+MAXIMUM_LIVE_QUOTE_AGE_SECONDS = 5.0
 MANAGED_PLAN_PATH = ROOT / ".apex_runtime" / "managed_gold_trade.json"
 
 
@@ -63,6 +67,12 @@ async def connect_with_retry(gateway: MT5BrokerGateway, attempts: int = 3, retry
             await gateway.disconnect()
             await asyncio.sleep(retry_delay_seconds)
     return retries
+
+
+def quote_age_seconds(timestamp: datetime) -> float:
+    """Measure broker tick freshness using UTC regardless of timestamp awareness."""
+    normalized = timestamp.replace(tzinfo=timezone.utc) if timestamp.tzinfo is None else timestamp.astimezone(timezone.utc)
+    return abs((datetime.now(timezone.utc) - normalized).total_seconds())
 
 
 async def refresh_closed_candles(
@@ -167,19 +177,42 @@ async def run_strategy(
     confirmation = TradeConfirmationOrchestrator(event_bus, state_manager)
     detector = MarketSetupOrchestrator(event_bus, state_manager, confirmation)
     scoring = TradeScoringOrchestrator(event_bus, state_manager)
-    risk = RiskManagementOrchestrator(event_bus, state_manager, maximum_lots=volume_cap)
+    risk = None
     lifecycle = InstitutionalTradeLifecycleManager()
+    plan_reconciler = ManagedTradePlanReconciler()
     plan_store = ManagedTradePlanStore(MANAGED_PLAN_PATH)
     managed_plan = plan_store.load()
+    startup_entry_block = False
+    reconciliation_status = "NOT_RECONCILED"
 
     await state_manager.bootstrap()
     try:
         connection_retries = await connect_with_retry(gateway)
         symbol = str(gateway.connection_summary()["symbol"])
+        sizing_specification = gateway.read_sizing_specification()
+        risk = RiskManagementOrchestrator(
+            event_bus,
+            state_manager,
+            position_sizer=InstitutionalPositionSizer(
+                account_equity=sizing_specification.account_equity,
+                maximum_lots=min(volume_cap, sizing_specification.volume_max),
+                minimum_lots=sizing_specification.volume_min,
+                volume_step=sizing_specification.volume_step,
+                loss_per_lot_calculator=lambda setup: gateway.calculate_stop_loss_currency_per_lot(
+                    setup.direction,
+                    setup.entry_price,
+                    setup.stop_loss,
+                ),
+            ),
+        )
+        await risk.bootstrap()
         existing_positions = await synchronize_positions(state_manager, gateway)
-        if not existing_positions and managed_plan is not None:
+        reconciliation = plan_reconciler.reconcile(managed_plan, existing_positions)
+        if reconciliation.clear_stale_plan:
             plan_store.clear()
-            managed_plan = None
+        managed_plan = reconciliation.active_plan
+        startup_entry_block = reconciliation.blocks_new_entries
+        reconciliation_status = reconciliation.status
 
         histories = {
             "1m": gateway.read_recent_closed_candles(1, warmup_bars),
@@ -209,14 +242,21 @@ async def run_strategy(
         )
         print(f"mode={mode}")
         print(f"symbol={symbol}")
+        print(f"risk_sizing_source=MT5_ACCOUNT_CURRENCY_{sizing_specification.account_currency}")
+        print(
+            f"broker_volume_min={sizing_specification.volume_min:.2f}; "
+            f"broker_volume_step={sizing_specification.volume_step:.2f}; "
+            f"configured_volume_cap={volume_cap:.2f}"
+        )
         print(f"connection_retries={connection_retries}")
         print(f"open_gold_positions_at_start={len(existing_positions)}")
+        print(f"startup_reconciliation={reconciliation_status}")
         print(f"historical_bars_processed={len(histories['1m'])}")
         print(f"structure_pivots={detector.tracked_structural_pivots}")
         print(f"historical_sweeps_cleared={detector.warmup_sweeps_cleared}")
         print(f"bias_1m={bias['1m']}; bias_15m={bias['15m']}; bias_1h={bias['1h']}; bias_4h={bias['4h']}")
         if existing_positions and managed_plan is None:
-            print("protection_status=OPEN_POSITION_NOT_CREATED_BY_MANAGED_RUNNER_NO_AUTO_TRAILING")
+            print("protection_status=OPEN_POSITION_NOT_SAFELY_MATCHED_NO_AUTO_TRAILING")
         if execute_one_demo_trade and existing_positions:
             print("status=BLOCKED_EXISTING_GOLD_POSITION")
             print("No new order sent.")
@@ -227,6 +267,7 @@ async def run_strategy(
         live_quotes = 0
         live_closed_candles = 0
         tick_read_failures = 0
+        stale_quote_reads = 0
         qualified = 0
         stop_updates = 0
         entry_submitted_this_run = False
@@ -238,6 +279,11 @@ async def run_strategy(
                 if "No tick available" not in str(exc):
                     raise
                 tick_read_failures += 1
+                await asyncio.sleep(poll_seconds)
+                continue
+            tick_age = quote_age_seconds(tick.timestamp)
+            if tick_age > MAXIMUM_LIVE_QUOTE_AGE_SECONDS:
+                stale_quote_reads += 1
                 await asyncio.sleep(poll_seconds)
                 continue
             signature = (tick.timestamp, tick.bid, tick.ask, tick.volume)
@@ -266,7 +312,7 @@ async def run_strategy(
             await detector.on_tick_received(tick)
 
             for setup, confirmation_snapshot in detector.drain_qualified_candidates():
-                if managed_plan is not None or entry_submitted_this_run:
+                if startup_entry_block or managed_plan is not None or entry_submitted_this_run:
                     print("candidate_status=BLOCKED_SINGLE_ACTIVE_OR_ALREADY_SUBMITTED_TRADE")
                     continue
                 ranked = await scoring.process_and_rank_setup(setup, confirmation_snapshot)
@@ -291,7 +337,7 @@ async def run_strategy(
                     return 2
 
                 token = uuid4().hex[:12]
-                report = await gateway.route_order_submission(
+                report, pre_submission = await gateway.route_revalidated_order_submission(
                     OrderRequest(
                         client_order_id=f"CORE_DEMO_{token}",
                         symbol=symbol,
@@ -302,8 +348,16 @@ async def run_strategy(
                         take_profit=setup.take_profit,
                         idempotency_key=f"CORE_DEMO_ONCE_{token}",
                         timestamp=datetime.now(timezone.utc),
-                    )
+                    ),
+                    maximum_currency_risk=risk_snapshot.sizing.currency_risk,
+                    maximum_spread_price=MAXIMUM_ENTRY_SPREAD_PRICE,
                 )
+                print(f"pre_submission_approved={pre_submission.is_approved}")
+                print(f"pre_submission_live_entry={pre_submission.live_entry_price:.2f}")
+                print(f"pre_submission_currency_risk={pre_submission.currency_risk:.2f}")
+                print(f"pre_submission_quote_age_seconds={pre_submission.quote_age_seconds:.3f}")
+                if pre_submission.rejection_reasons:
+                    print(f"pre_submission_rejection={','.join(pre_submission.rejection_reasons)}")
                 print(f"status={report.status.value}")
                 print(f"broker_order_id={report.broker_order_id}")
                 print(f"filled_quantity={report.filled_quantity:.2f}")
@@ -333,6 +387,7 @@ async def run_strategy(
         print(f"live_quotes_processed={live_quotes}")
         print(f"live_closed_candles_ingested={live_closed_candles}")
         print(f"temporary_tick_gaps={tick_read_failures}")
+        print(f"stale_quote_reads_discarded={stale_quote_reads}")
         print(f"stop_updates_applied={stop_updates}")
         print(f"qualified_candidates={qualified}")
         diagnostics = detector.diagnostic_snapshot
@@ -342,7 +397,10 @@ async def run_strategy(
         print(f"quality_blocks={diagnostics['quality_blocks']}")
         print(f"cooldown_blocks={diagnostics['cooldown_blocks']}")
         nearest_pool = diagnostics["nearest_active_pool"]
-        if nearest_pool:
+        if live_quotes == 0 and stale_quote_reads > 0:
+            print("market_data_status=NO_FRESH_LIVE_QUOTES")
+            print("nearest_liquidity_level=NOT_REPORTED_WITHOUT_FRESH_MARKET_PRICE")
+        elif nearest_pool:
             print(f"active_liquidity_pools={nearest_pool['active_pool_count']}")
             print(
                 f"nearest_liquidity_level={nearest_pool['side']} "
@@ -353,10 +411,16 @@ async def run_strategy(
             print("active_liquidity_pools=0")
         if diagnostics["latest_confirmation_reasons"]:
             print(f"latest_confirmation_rejection={','.join(diagnostics['latest_confirmation_reasons'])}")
+        if live_quotes == 0 and stale_quote_reads > 0:
+            print("status=SHADOW_TEST_INVALID_NO_FRESH_MARKET_QUOTES")
+            print("No order sent.")
+            return 3
         print("status=NO_QUALIFIED_SIGNAL_BEFORE_TIMEOUT")
         print("No order sent.")
         return 0
     finally:
+        if risk is not None:
+            await risk.terminate()
         await detector.terminate()
         await confirmation.terminate()
         await gateway.disconnect()

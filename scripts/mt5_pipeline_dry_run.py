@@ -22,6 +22,7 @@ from src.core.domain.constants import OrderDirection
 from src.core.domain.execution_models import OrderRequest
 from src.core.domain.setup_models import SetupOpportunityNode, SetupQualityTier, SetupType
 from src.core.events.event_bus import EventBus
+from src.execution.position_sizer import InstitutionalPositionSizer
 from src.execution.risk_firewall import RiskManagementOrchestrator
 from src.infrastructure.broker.mt5_config import load_mt5_config
 from src.infrastructure.broker.mt5_gateway import MT5BrokerGateway
@@ -29,6 +30,7 @@ from src.strategy.scoring_matrix import TradeScoringOrchestrator
 from src.strategy.state_manager import CentralRuntimeStateManager
 
 VALIDATION_VOLUME_CAP = 0.01
+MAXIMUM_ENTRY_SPREAD_PRICE = 0.35
 
 
 def _build_validation_candidate(entry: float, now: datetime) -> tuple[SetupOpportunityNode, ConfirmationSnapshot]:
@@ -105,11 +107,28 @@ async def main() -> int:
         setup, confirmation = _build_validation_candidate(ask, now.replace(tzinfo=None))
         scorer = TradeScoringOrchestrator(event_bus, state_manager)
         risk_limit_lots = min(config.max_lot, VALIDATION_VOLUME_CAP)
-        risk_manager = RiskManagementOrchestrator(event_bus, state_manager, maximum_lots=risk_limit_lots)
+        sizing_specification = gateway.read_sizing_specification()
+        risk_manager = RiskManagementOrchestrator(
+            event_bus,
+            state_manager,
+            position_sizer=InstitutionalPositionSizer(
+                account_equity=sizing_specification.account_equity,
+                maximum_lots=min(risk_limit_lots, sizing_specification.volume_max),
+                minimum_lots=sizing_specification.volume_min,
+                volume_step=sizing_specification.volume_step,
+                loss_per_lot_calculator=lambda candidate: gateway.calculate_stop_loss_currency_per_lot(
+                    candidate.direction,
+                    candidate.entry_price,
+                    candidate.stop_loss,
+                ),
+            ),
+        )
         ranked = await scorer.process_and_rank_setup(setup, confirmation)
 
         print("MT5 pipeline validation - DRY RUN ONLY; NO ORDER WILL BE SENT")
         print(f"symbol={symbol}")
+        print(f"risk_sizing_source=MT5_ACCOUNT_CURRENCY_{sizing_specification.account_currency}")
+        print(f"broker_volume_step={sizing_specification.volume_step:.2f}")
         print(f"spread={ask - bid:.5f}")
         print(f"score={ranked.score_breakdown.normalized_final_score:.2f}")
         print(f"score_approved={ranked.is_live_executable}")
@@ -142,8 +161,17 @@ async def main() -> int:
             idempotency_key=f"PIPELINE_DRY_RUN_{uuid4().hex}",
             timestamp=now,
         )
-        report = await gateway.route_order_submission(request)
+        report, pre_submission = await gateway.route_revalidated_order_submission(
+            request,
+            maximum_currency_risk=risk_snapshot.sizing.currency_risk,
+            maximum_spread_price=MAXIMUM_ENTRY_SPREAD_PRICE,
+        )
         print(f"checked_lots={volume:.4f}")
+        print(f"pre_submission_approved={pre_submission.is_approved}")
+        print(f"pre_submission_live_currency_risk={pre_submission.currency_risk:.2f}")
+        print(f"pre_submission_quote_age_seconds={pre_submission.quote_age_seconds:.3f}")
+        if pre_submission.rejection_reasons:
+            print(f"pre_submission_rejection={','.join(pre_submission.rejection_reasons)}")
         print(f"mt5_check_status={report.status.value}")
         print(f"rejection_reason={report.rejection_reason}")
         return 0 if report.rejection_reason is None else 1

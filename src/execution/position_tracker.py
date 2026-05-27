@@ -6,8 +6,10 @@ from dataclasses import dataclass
 import json
 from math import floor
 from pathlib import Path
+from typing import Sequence
 
 from src.core.domain.constants import OrderDirection
+from src.core.domain.execution_models import PositionSnapshot
 from src.core.domain.market_data import CandleNode
 
 
@@ -33,6 +35,17 @@ class ManagedTradePlan:
     initial_stop_loss: float
     final_take_profit: float
     last_confirmed_milestone: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedTradeReconciliation:
+    """Startup result deciding whether an existing broker position can be managed safely."""
+
+    status: str
+    active_plan: ManagedTradePlan | None
+    clear_stale_plan: bool
+    blocks_new_entries: bool
+    allows_automatic_management: bool
 
 
 class ManagedTradePlanStore:
@@ -71,6 +84,77 @@ class ManagedTradePlanStore:
     def clear(self) -> None:
         if self._path.exists():
             self._path.unlink()
+
+
+class ManagedTradePlanReconciler:
+    """Match local protection state to broker truth without reconstructing missing risk."""
+
+    def __init__(self, price_tolerance: float = 1e-6) -> None:
+        if price_tolerance < 0.0:
+            raise ValueError("price_tolerance cannot be negative.")
+        self._price_tolerance = price_tolerance
+
+    def reconcile(
+        self,
+        plan: ManagedTradePlan | None,
+        broker_positions: Sequence[PositionSnapshot],
+    ) -> ManagedTradeReconciliation:
+        if not broker_positions:
+            return ManagedTradeReconciliation(
+                status="STALE_LOCAL_PLAN_CLEARED_NO_OPEN_POSITION" if plan is not None else "NO_OPEN_POSITION",
+                active_plan=None,
+                clear_stale_plan=plan is not None,
+                blocks_new_entries=False,
+                allows_automatic_management=False,
+            )
+        if len(broker_positions) != 1:
+            return ManagedTradeReconciliation(
+                status="UNSAFE_MULTIPLE_OPEN_GOLD_POSITIONS_NO_AUTO_MANAGEMENT",
+                active_plan=None,
+                clear_stale_plan=False,
+                blocks_new_entries=True,
+                allows_automatic_management=False,
+            )
+        position = broker_positions[0]
+        if plan is None:
+            return self._unmanaged("OPEN_POSITION_HAS_NO_LOCAL_RISK_PLAN")
+        if position.ticket != plan.ticket:
+            return self._unmanaged("LOCAL_PLAN_TICKET_DOES_NOT_MATCH_OPEN_POSITION")
+        if position.symbol != plan.symbol or position.direction != plan.direction:
+            return self._unmanaged("LOCAL_PLAN_SYMBOL_OR_DIRECTION_MISMATCH")
+        if not self._price_matches(position.average_entry_price, plan.entry):
+            return self._unmanaged("LOCAL_PLAN_ENTRY_PRICE_MISMATCH")
+        if not self._price_matches(position.take_profit, plan.final_take_profit):
+            return self._unmanaged("LOCAL_PLAN_TAKE_PROFIT_MISMATCH")
+        if not self._valid_risk_geometry(plan, position.stop_loss):
+            return self._unmanaged("LOCAL_PLAN_OR_BROKER_STOP_GEOMETRY_INVALID")
+        return ManagedTradeReconciliation(
+            status="MATCHED_OPEN_POSITION_AUTOMATIC_MANAGEMENT_AVAILABLE",
+            active_plan=plan,
+            clear_stale_plan=False,
+            blocks_new_entries=True,
+            allows_automatic_management=True,
+        )
+
+    def _unmanaged(self, status: str) -> ManagedTradeReconciliation:
+        return ManagedTradeReconciliation(
+            status=status,
+            active_plan=None,
+            clear_stale_plan=False,
+            blocks_new_entries=True,
+            allows_automatic_management=False,
+        )
+
+    def _price_matches(self, first: float, second: float) -> bool:
+        return abs(first - second) <= self._price_tolerance
+
+    @staticmethod
+    def _valid_risk_geometry(plan: ManagedTradePlan, broker_stop: float) -> bool:
+        if broker_stop <= 0.0:
+            return False
+        if plan.direction == OrderDirection.BUY:
+            return plan.initial_stop_loss < plan.entry < plan.final_take_profit and broker_stop < plan.final_take_profit
+        return plan.final_take_profit < plan.entry < plan.initial_stop_loss and broker_stop > plan.final_take_profit
 
 
 class InstitutionalTradeLifecycleManager:

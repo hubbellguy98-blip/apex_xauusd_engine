@@ -40,6 +40,42 @@ def test_position_sizing_applies_configured_lot_safety_cap(state_manager: Centra
 
 
 @pytest.mark.unit
+def test_broker_grounded_sizing_rounds_down_to_volume_step(state_manager: CentralRuntimeStateManager) -> None:
+    """Uses broker-reported stop exposure rather than assumed contract size."""
+    sizer = InstitutionalPositionSizer(
+        account_equity=10000.0,
+        maximum_lots=1.0,
+        minimum_lots=0.01,
+        volume_step=0.01,
+        loss_per_lot_calculator=lambda setup: 375.0,
+    )
+    setup = SetupOpportunityFactory.create_setup(entry=2400.0, sl=2395.0, tp=2415.0)
+
+    sizing_payload = sizer.calculate_lot_size(setup, state_manager.snapshot, score_multiplier=0.75)
+
+    assert sizing_payload.calculated_lots == pytest.approx(0.20)
+    assert sizing_payload.currency_risk == pytest.approx(75.0)
+    assert sizing_payload.risk_percentage_applied == pytest.approx(0.75)
+
+
+@pytest.mark.unit
+def test_broker_grounded_sizing_rejects_volume_below_minimum(state_manager: CentralRuntimeStateManager) -> None:
+    """Does not force an oversized broker-minimum order above the intended risk."""
+    sizer = InstitutionalPositionSizer(
+        account_equity=1000.0,
+        minimum_lots=0.01,
+        volume_step=0.01,
+        loss_per_lot_calculator=lambda setup: 10000.0,
+    )
+    setup = SetupOpportunityFactory.create_setup(entry=2400.0, sl=2395.0, tp=2415.0)
+
+    sizing_payload = sizer.calculate_lot_size(setup, state_manager.snapshot, score_multiplier=0.50)
+
+    assert sizing_payload.calculated_lots == 0.0
+    assert sizing_payload.currency_risk == 0.0
+
+
+@pytest.mark.unit
 def test_drawdown_firewall_systemic_halt(state_manager: CentralRuntimeStateManager) -> None:
     """Verifies that drawdown protection engines trigger platform halts when capital risk thresholds are crossed."""
     firewall = CapitalProtectionDrawdownEngine(max_daily_loss_pct=3.0, max_consecutive_losses=3)
