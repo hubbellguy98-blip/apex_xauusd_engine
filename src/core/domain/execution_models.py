@@ -57,8 +57,24 @@ class ExecutionReport:
 
 
 @dataclass(frozen=True, slots=True)
+class PositionProtectionReport:
+    position_ticket: int
+    timestamp: datetime
+    requested_stop_loss: float
+    retained_take_profit: float
+    applied: bool
+    dry_run: bool
+    rejection_reason: Optional[str] = None
+
+
+@dataclass(frozen=True, slots=True)
 class PositionSnapshot:
     symbol: str
     net_quantity_lots: float
     average_entry_price: float
     floating_pnl_pips: float = 0.0
+    ticket: int = 0
+    direction: Optional[OrderDirection] = None
+    stop_loss: float = 0.0
+    take_profit: float = 0.0
+    current_price: float = 0.0

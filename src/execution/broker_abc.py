@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import AsyncGenerator, List
 
-from src.core.domain.execution_models import ExecutionReport, OrderRequest, PositionSnapshot
+from src.core.domain.execution_models import ExecutionReport, OrderRequest, PositionProtectionReport, PositionSnapshot
 
 
 class BrokerGatewayABC(ABC):
@@ -27,4 +27,12 @@ class BrokerGatewayABC(ABC):
 
     @abstractmethod
     async def query_live_positions(self) -> List[PositionSnapshot]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def route_position_stop_update(
+        self,
+        position: PositionSnapshot,
+        proposed_stop_loss: float,
+    ) -> PositionProtectionReport:
         raise NotImplementedError

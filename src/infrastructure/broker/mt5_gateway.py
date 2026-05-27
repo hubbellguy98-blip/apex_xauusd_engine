@@ -7,7 +7,13 @@ from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator, List, Optional
 
 from src.core.domain.constants import OrderDirection
-from src.core.domain.execution_models import ExecutionReport, OrderRequest, OrderStatus, PositionSnapshot
+from src.core.domain.execution_models import (
+    ExecutionReport,
+    OrderRequest,
+    OrderStatus,
+    PositionProtectionReport,
+    PositionSnapshot,
+)
 from src.core.domain.market_data import CandleNode, TickNode
 from src.execution.broker_abc import BrokerGatewayABC
 from src.infrastructure.broker.mt5_config import MT5GatewayConfig
@@ -97,6 +103,8 @@ class MT5BrokerGateway(BrokerGatewayABC):
         self._require_connected()
         mt5 = self._mt5
         symbol = self._resolved_symbol or self.resolve_symbol(request.symbol)
+        if mt5.positions_get(symbol=symbol):
+            return self._reject(request, "ACTIVE_GOLD_POSITION_EXISTS_SINGLE_TRADE_LIMIT")
         volume = min(float(request.quantity_lots), self._config.max_lot)
         if volume <= 0:
             return self._reject(request, "ORDER_VOLUME_ZERO_OR_NEGATIVE")
@@ -152,15 +160,84 @@ class MT5BrokerGateway(BrokerGatewayABC):
         positions = self._mt5.positions_get(symbol=self._resolved_symbol)
         snapshots: List[PositionSnapshot] = []
         for position in positions or []:
+            direction = (
+                OrderDirection.BUY
+                if getattr(position, "type", None) == getattr(self._mt5, "POSITION_TYPE_BUY", 0)
+                else OrderDirection.SELL
+            )
             snapshots.append(
                 PositionSnapshot(
                     symbol=position.symbol,
                     net_quantity_lots=float(position.volume),
                     average_entry_price=float(position.price_open),
                     floating_pnl_pips=float(getattr(position, "profit", 0.0)),
+                    ticket=int(getattr(position, "ticket", 0)),
+                    direction=direction,
+                    stop_loss=float(getattr(position, "sl", 0.0)),
+                    take_profit=float(getattr(position, "tp", 0.0)),
+                    current_price=float(getattr(position, "price_current", 0.0)),
                 )
             )
         return snapshots
+
+    async def route_position_stop_update(
+        self,
+        position: PositionSnapshot,
+        proposed_stop_loss: float,
+    ) -> PositionProtectionReport:
+        """Update only SL for one open MT5 position while retaining its final TP."""
+        self._require_connected()
+        if position.ticket <= 0:
+            return self._protection_reject(position, proposed_stop_loss, "POSITION_TICKET_UNAVAILABLE")
+        if position.direction is None:
+            return self._protection_reject(position, proposed_stop_loss, "POSITION_DIRECTION_UNAVAILABLE")
+        improves_stop = (
+            proposed_stop_loss > position.stop_loss
+            if position.direction == OrderDirection.BUY
+            else proposed_stop_loss < position.stop_loss
+        )
+        if not improves_stop:
+            return self._protection_reject(position, proposed_stop_loss, "STOP_UPDATE_NOT_MORE_PROTECTIVE")
+
+        payload = {
+            "action": self._mt5.TRADE_ACTION_SLTP,
+            "position": position.ticket,
+            "symbol": position.symbol,
+            "sl": float(proposed_stop_loss),
+            "tp": float(position.take_profit),
+            "magic": self._config.magic_number,
+            "comment": "apex_staged_trail",
+        }
+        if self._config.dry_run:
+            return PositionProtectionReport(
+                position_ticket=position.ticket,
+                timestamp=datetime.now(timezone.utc),
+                requested_stop_loss=float(proposed_stop_loss),
+                retained_take_profit=float(position.take_profit),
+                applied=False,
+                dry_run=True,
+            )
+
+        result = self._mt5.order_send(payload)
+        success_codes = {
+            getattr(self._mt5, "TRADE_RETCODE_DONE", 10009),
+            getattr(self._mt5, "TRADE_RETCODE_PLACED", 10008),
+        }
+        if result is None or getattr(result, "retcode", None) not in success_codes:
+            reason = (
+                "STOP_UPDATE_RETURNED_NONE"
+                if result is None
+                else f"STOP_UPDATE_REJECTED: {getattr(result, 'comment', getattr(result, 'retcode', 'UNKNOWN'))}"
+            )
+            return self._protection_reject(position, proposed_stop_loss, reason)
+        return PositionProtectionReport(
+            position_ticket=position.ticket,
+            timestamp=datetime.now(timezone.utc),
+            requested_stop_loss=float(proposed_stop_loss),
+            retained_take_profit=float(position.take_profit),
+            applied=True,
+            dry_run=False,
+        )
 
     def read_current_tick(self) -> TickNode:
         """Read the currently quoted broker tick without creating an order request."""
@@ -282,6 +359,22 @@ class MT5BrokerGateway(BrokerGatewayABC):
             average_fill_price=0.0,
             last_fill_price=0.0,
             slippage_pips=0.0,
+            rejection_reason=reason,
+        )
+
+    @staticmethod
+    def _protection_reject(
+        position: PositionSnapshot,
+        proposed_stop_loss: float,
+        reason: str,
+    ) -> PositionProtectionReport:
+        return PositionProtectionReport(
+            position_ticket=position.ticket,
+            timestamp=datetime.now(timezone.utc),
+            requested_stop_loss=float(proposed_stop_loss),
+            retained_take_profit=float(position.take_profit),
+            applied=False,
+            dry_run=False,
             rejection_reason=reason,
         )
 

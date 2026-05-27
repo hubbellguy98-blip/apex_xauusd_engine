@@ -109,3 +109,24 @@ python scripts/mt5_intelligent_demo_runner.py --duration-seconds 300 --execute-o
 
 The intelligent runner continues to require demo mode, limit volume to `0.01` lots, and refuse a new trade while a Gold position is already open.
 In shadow mode it also reports the decision funnel, including live sweeps, reversal candidates, confirmation or quality rejections, the nearest active liquidity level, startup connection retries, and temporary broker quote gaps, without changing the trading thresholds. The confirmation stage enforces the configured London and New York killzone windows exactly rather than treating the full regional session as trade permission.
+
+## Position Protection Policy
+
+- The MT5 gateway refuses a new Gold entry whenever an existing Gold position is open, regardless of which entry script requests it.
+- A planned `1:6` trade is treated as six profit milestones while the single broker position retains its final TP.
+- Trailing decisions use completed candles rather than tick touches: a candle must close beyond a milestone plus a small confirmation buffer.
+- The stop is placed slightly behind the secured milestone rather than exactly on it, allowing ordinary pullbacks while locking progressively more profit.
+- A local ignored protection record preserves the initial SL and completed milestone if the runner is restarted.
+- Actual demo-position stop modification is separately protected and must be explicitly enabled:
+
+```powershell
+python scripts/mt5_intelligent_demo_runner.py --duration-seconds 300 --manage-open-demo --confirm-management ENABLE_BUFFERED_DEMO_TRAILING
+```
+
+When a future authorized strategy run should remain alive to protect the position it opens, use both explicit approvals:
+
+```powershell
+python scripts/mt5_intelligent_demo_runner.py --duration-seconds 1800 --execute-one-demo --confirm-execution ENABLE_ONE_INTELLIGENT_DEMO_TRADE --manage-open-demo --confirm-management ENABLE_BUFFERED_DEMO_TRAILING
+```
+
+The runner must remain active while the position is open for automatic trailing changes to be submitted to MT5.
