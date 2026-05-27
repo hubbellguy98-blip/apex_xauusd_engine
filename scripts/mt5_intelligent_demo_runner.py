@@ -42,6 +42,45 @@ async def synchronize_positions(state_manager: CentralRuntimeStateManager, gatew
     return positions
 
 
+async def connect_with_retry(gateway: MT5BrokerGateway, attempts: int = 3, retry_delay_seconds: float = 2.0) -> int:
+    """Retry temporary MT5 terminal IPC timeouts during startup."""
+    retries = 0
+    for attempt in range(attempts):
+        try:
+            await gateway.connect()
+            return retries
+        except RuntimeError as exc:
+            if "IPC timeout" not in str(exc) or attempt == attempts - 1:
+                raise
+            retries += 1
+            await gateway.disconnect()
+            await asyncio.sleep(retry_delay_seconds)
+    return retries
+
+
+async def refresh_closed_candles(
+    gateway: MT5BrokerGateway,
+    detector: MarketSetupOrchestrator,
+    confirmation: TradeConfirmationOrchestrator,
+    latest_candle_end_by_timeframe: dict[str, datetime],
+) -> int:
+    """Feed each newly completed MT5 candle once into the live strategy state."""
+    requested_timeframes = {"1m": 1, "15m": 15, "1h": 60, "4h": 240}
+    newly_ingested = 0
+    for timeframe, timeframe_minutes in requested_timeframes.items():
+        candles = gateway.read_recent_closed_candles(timeframe_minutes, 5)
+        previous_end = latest_candle_end_by_timeframe[timeframe]
+        for candle in candles:
+            if candle.end_time <= previous_end:
+                continue
+            await detector.on_candle_evacuation(candle)
+            if timeframe == "1m":
+                await confirmation.on_candle_evacuation(candle)
+            latest_candle_end_by_timeframe[timeframe] = candle.end_time
+            newly_ingested += 1
+    return newly_ingested
+
+
 async def run_strategy(
     duration_seconds: float,
     poll_seconds: float,
@@ -67,8 +106,8 @@ async def run_strategy(
     risk = RiskManagementOrchestrator(event_bus, state_manager, maximum_lots=volume_cap)
 
     await state_manager.bootstrap()
-    await gateway.connect()
     try:
+        connection_retries = await connect_with_retry(gateway)
         symbol = str(gateway.connection_summary()["symbol"])
         existing_positions = await synchronize_positions(state_manager, gateway)
 
@@ -83,11 +122,15 @@ async def run_strategy(
                 await detector.seed_closed_candle(candle)
                 if timeframe == "1m":
                     await confirmation.on_candle_evacuation(candle)
+        latest_candle_end_by_timeframe = {
+            timeframe: candles[-1].end_time for timeframe, candles in histories.items()
+        }
 
         bias = detector.directional_bias_matrix
         print("MT5 CORE STRATEGY RUNNER")
         print(f"mode={'ONE_DEMO_EXECUTION' if execute_one_demo_trade else 'SHADOW_ONLY_NO_ORDER'}")
         print(f"symbol={symbol}")
+        print(f"connection_retries={connection_retries}")
         print(f"open_gold_positions_at_start={len(existing_positions)}")
         print(f"historical_bars_processed={len(histories['1m'])}")
         print(f"structure_pivots={detector.tracked_structural_pivots}")
@@ -100,16 +143,31 @@ async def run_strategy(
 
         previous_signature = None
         live_quotes = 0
+        live_closed_candles = 0
+        tick_read_failures = 0
         qualified = 0
         started = asyncio.get_running_loop().time()
         while asyncio.get_running_loop().time() - started < duration_seconds:
-            tick = gateway.read_current_tick()
+            try:
+                tick = gateway.read_current_tick()
+            except RuntimeError as exc:
+                if "No tick available" not in str(exc):
+                    raise
+                tick_read_failures += 1
+                await asyncio.sleep(poll_seconds)
+                continue
             signature = (tick.timestamp, tick.bid, tick.ask, tick.volume)
             if signature == previous_signature:
                 await asyncio.sleep(poll_seconds)
                 continue
             previous_signature = signature
             live_quotes += 1
+            live_closed_candles += await refresh_closed_candles(
+                gateway,
+                detector,
+                confirmation,
+                latest_candle_end_by_timeframe,
+            )
             await detector.on_tick_received(tick)
 
             for setup, confirmation_snapshot in detector.drain_qualified_candidates():
@@ -157,6 +215,8 @@ async def run_strategy(
             await asyncio.sleep(poll_seconds)
 
         print(f"live_quotes_processed={live_quotes}")
+        print(f"live_closed_candles_ingested={live_closed_candles}")
+        print(f"temporary_tick_gaps={tick_read_failures}")
         print(f"qualified_candidates={qualified}")
         diagnostics = detector.diagnostic_snapshot
         print(f"live_sweeps_detected={diagnostics['live_sweeps_detected']}")

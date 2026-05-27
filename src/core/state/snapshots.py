@@ -44,6 +44,7 @@ class StateSnapshotSerializer:
             session=SessionDomainState(
                 current_phase=SessionState(session["current_phase"]),
                 last_phase_transition=parse_dt(session["last_phase_transition"]),
+                killzone_active=bool(session.get("killzone_active", False)),
             ),
             regime=RegimeDomainState(
                 current_regime=MarketRegime(regime["current_regime"]),

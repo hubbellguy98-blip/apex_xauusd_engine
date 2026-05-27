@@ -113,7 +113,8 @@ class CentralRuntimeStateManager(BaseSubsystem):
                 current_mid=0.0, current_spread=0.0, accumulated_tick_count=0, is_synchronized=False
             ),
             session=SessionDomainState(
-                current_phase=SessionState.SYSTEM_SHUTDOWN, last_phase_transition=init_time
+                current_phase=SessionState.SYSTEM_SHUTDOWN, last_phase_transition=init_time,
+                killzone_active=False,
             ),
             regime=RegimeDomainState(
                 current_regime=MarketRegime.UNKNOWN, volatility_ratio=1.0,

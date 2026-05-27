@@ -23,10 +23,11 @@ class MarketDomainState:
 class SessionDomainState:
     current_phase: SessionState
     last_phase_transition: datetime
+    killzone_active: bool = False
 
     @property
     def is_killzone_active(self) -> bool:
-        return self.current_phase in {SessionState.LONDON_KILLZONE, SessionState.NEWYORK_KILLZONE}
+        return self.killzone_active
 
 
 @dataclass(frozen=True, slots=True)

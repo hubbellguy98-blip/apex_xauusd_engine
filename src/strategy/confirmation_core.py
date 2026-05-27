@@ -99,6 +99,8 @@ class TradeConfirmationOrchestrator(BaseSubsystem):
         # 5. Composite Score Calculation Model
         # Formula uses static weights to prevent floating pointer calculation drift
         weighted_score = (mom_score * 0.35) + (disp_score * 0.35) + (align_score * 0.30)
+        if weighted_score < 75.0:
+            invalidation_reasons.append("CONFIRMATION_SCORE_BELOW_MINIMUM_THRESHOLD")
         
         is_validated = len(invalidation_reasons) == 0 and weighted_score >= 75.0
         

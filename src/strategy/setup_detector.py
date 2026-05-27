@@ -84,7 +84,7 @@ class MarketSetupOrchestrator(BaseSubsystem):
         """Processes real-time ticks to evaluate reversals and run active setup invalidation checks."""
         self._diagnostics["live_ticks_processed"] += 1
         current_time = event.timestamp.replace(tzinfo=None)
-        session, _, _ = self._session_engine.evaluate_temporal_context(event.timestamp, event.mid)
+        session, is_killzone, _ = self._session_engine.evaluate_temporal_context(event.timestamp, event.mid)
         await self._state_manager.commit_market_update(
             {
                 "last_tick_time": current_time,
@@ -98,7 +98,11 @@ class MarketSetupOrchestrator(BaseSubsystem):
             event.correlation_id or f"SETUP_TICK_{event.sequence_id}",
         )
         await self._state_manager.commit_session_update(
-            {"current_phase": session, "last_phase_transition": current_time},
+            {
+                "current_phase": session,
+                "last_phase_transition": current_time,
+                "killzone_active": is_killzone,
+            },
             event.correlation_id or f"SETUP_SESSION_{event.sequence_id}",
         )
         state_snap = self._state_manager.snapshot

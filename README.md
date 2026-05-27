@@ -95,7 +95,7 @@ python scripts/mt5_demo_auto_trigger.py --confirm-demo-auto ENABLE_ONE_DEMO_AUTO
 
 ## Intelligent Demo Runner
 
-`mt5_intelligent_demo_runner.py` drives the original core strategy path: completed MT5 candles create structure and liquidity levels inside `MarketSetupOrchestrator`, live quotes detect sweeps, and existing confirmation, scoring, and capped-risk checks determine whether a trade qualifies.
+`mt5_intelligent_demo_runner.py` drives the original core strategy path: completed MT5 candles create structure and liquidity levels inside `MarketSetupOrchestrator`, newly closed candles continuously refresh that live state, live quotes detect sweeps, and existing confirmation, scoring, and capped-risk checks determine whether a trade qualifies.
 
 ```powershell
 python scripts/mt5_intelligent_demo_runner.py --duration-seconds 60
@@ -108,4 +108,4 @@ python scripts/mt5_intelligent_demo_runner.py --duration-seconds 300 --execute-o
 ```
 
 The intelligent runner continues to require demo mode, limit volume to `0.01` lots, and refuse a new trade while a Gold position is already open.
-In shadow mode it also reports the decision funnel, including live sweeps, reversal candidates, confirmation or quality rejections, and the nearest active liquidity level, without changing the trading thresholds.
+In shadow mode it also reports the decision funnel, including live sweeps, reversal candidates, confirmation or quality rejections, the nearest active liquidity level, startup connection retries, and temporary broker quote gaps, without changing the trading thresholds. The confirmation stage enforces the configured London and New York killzone windows exactly rather than treating the full regional session as trade permission.
