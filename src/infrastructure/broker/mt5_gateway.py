@@ -119,8 +119,9 @@ class MT5BrokerGateway(BrokerGatewayABC):
         maximum_currency_risk: float,
         maximum_spread_price: float,
         maximum_quote_age_seconds: float = 5.0,
+        observed_quote_age_seconds: float | None = None,
     ) -> tuple[ExecutionReport, PreSubmissionRiskAssessment]:
-        """Submit only if the latest executable quote still respects approved risk."""
+        """Submit only if a recently active quote stream still respects approved risk."""
         self._require_connected()
         volume = self.normalize_order_volume(float(request.quantity_lots))
         try:
@@ -161,7 +162,9 @@ class MT5BrokerGateway(BrokerGatewayABC):
             currency_risk=currency_risk,
             maximum_currency_risk=maximum_currency_risk,
             spread_price=tick.spread,
-            quote_timestamp=tick.timestamp,
+            observed_quote_age_seconds=(
+                float("inf") if observed_quote_age_seconds is None else observed_quote_age_seconds
+            ),
         )
         if not assessment.is_approved:
             reason = "PRE_SUBMISSION_REVALIDATION_FAILED: " + ",".join(assessment.rejection_reasons)

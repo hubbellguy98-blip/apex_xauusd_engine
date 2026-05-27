@@ -20,9 +20,11 @@ from src.core.domain.confirmation_models import (
 )
 from src.core.domain.constants import OrderDirection
 from src.core.domain.execution_models import OrderRequest
+from src.core.domain.market_data import TickNode
 from src.core.domain.setup_models import SetupOpportunityNode, SetupQualityTier, SetupType
 from src.core.events.event_bus import EventBus
 from src.execution.position_sizer import InstitutionalPositionSizer
+from src.execution.pre_submission_guard import LiveQuoteActivityMonitor, QuoteActivitySnapshot
 from src.execution.risk_firewall import RiskManagementOrchestrator
 from src.infrastructure.broker.mt5_config import load_mt5_config
 from src.infrastructure.broker.mt5_gateway import MT5BrokerGateway
@@ -31,6 +33,24 @@ from src.strategy.state_manager import CentralRuntimeStateManager
 
 VALIDATION_VOLUME_CAP = 0.01
 MAXIMUM_ENTRY_SPREAD_PRICE = 0.35
+MAXIMUM_LIVE_QUOTE_INACTIVITY_SECONDS = 5.0
+
+
+async def wait_for_live_quote_activity(
+    gateway: MT5BrokerGateway, timeout_seconds: float = 8.0
+) -> tuple[TickNode | None, QuoteActivitySnapshot | None]:
+    """Wait for at least one arriving quote change before testing the order boundary."""
+    monitor = LiveQuoteActivityMonitor(MAXIMUM_LIVE_QUOTE_INACTIVITY_SECONDS)
+    latest_tick = None
+    latest_snapshot = None
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while asyncio.get_running_loop().time() < deadline:
+        latest_tick = gateway.read_current_tick()
+        latest_snapshot = monitor.observe(latest_tick)
+        if latest_snapshot.is_fresh:
+            return latest_tick, latest_snapshot
+        await asyncio.sleep(0.25)
+    return None, latest_snapshot
 
 
 def _build_validation_candidate(entry: float, now: datetime) -> tuple[SetupOpportunityNode, ConfirmationSnapshot]:
@@ -84,7 +104,12 @@ async def main() -> int:
     try:
         summary = gateway.connection_summary()
         symbol = str(summary["symbol"])
-        tick = gateway.read_current_tick()
+        tick, activity_snapshot = await wait_for_live_quote_activity(gateway)
+        if tick is None or activity_snapshot is None:
+            print("MT5 pipeline validation - DRY RUN ONLY; NO ORDER WILL BE SENT")
+            print(f"symbol={symbol}")
+            print("market_data_status=NO_RECENT_TICK_ACTIVITY")
+            return 1
         ask = tick.ask
         bid = tick.bid
         if ask <= 0.0 or bid <= 0.0:
@@ -165,6 +190,7 @@ async def main() -> int:
             request,
             maximum_currency_risk=risk_snapshot.sizing.currency_risk,
             maximum_spread_price=MAXIMUM_ENTRY_SPREAD_PRICE,
+            observed_quote_age_seconds=activity_snapshot.quote_age_seconds,
         )
         print(f"checked_lots={volume:.4f}")
         print(f"pre_submission_approved={pre_submission.is_approved}")

@@ -2,10 +2,55 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from math import inf
+from time import monotonic
 
 from src.core.domain.constants import OrderDirection
+from src.core.domain.market_data import TickNode
 from src.core.domain.risk_models import PreSubmissionRiskAssessment
+
+
+@dataclass(frozen=True, slots=True)
+class QuoteActivitySnapshot:
+    """Recency of observable quote changes received by this process."""
+
+    is_fresh: bool
+    quote_age_seconds: float
+    updates_observed: int
+
+
+class LiveQuoteActivityMonitor:
+    """Detect a live stream from changing quotes without assuming broker clock alignment."""
+
+    def __init__(self, maximum_inactivity_seconds: float = 5.0) -> None:
+        if maximum_inactivity_seconds <= 0.0:
+            raise ValueError("Quote inactivity limit must be positive.")
+        self._maximum_inactivity_seconds = maximum_inactivity_seconds
+        self._previous_signature: tuple | None = None
+        self._last_update_time: float | None = None
+        self._updates_observed = 0
+
+    @property
+    def updates_observed(self) -> int:
+        return self._updates_observed
+
+    def observe(self, tick: TickNode, observed_at_seconds: float | None = None) -> QuoteActivitySnapshot:
+        observed_at = monotonic() if observed_at_seconds is None else observed_at_seconds
+        signature = (tick.timestamp, tick.bid, tick.ask, tick.volume)
+        if self._previous_signature is None:
+            self._previous_signature = signature
+        elif signature != self._previous_signature:
+            self._previous_signature = signature
+            self._last_update_time = observed_at
+            self._updates_observed += 1
+
+        quote_age = inf if self._last_update_time is None else max(0.0, observed_at - self._last_update_time)
+        return QuoteActivitySnapshot(
+            is_fresh=quote_age <= self._maximum_inactivity_seconds,
+            quote_age_seconds=quote_age,
+            updates_observed=self._updates_observed,
+        )
 
 
 class PreSubmissionRiskGuard:
@@ -35,17 +80,10 @@ class PreSubmissionRiskGuard:
         currency_risk: float,
         maximum_currency_risk: float,
         spread_price: float,
-        quote_timestamp: datetime,
-        now: datetime | None = None,
+        observed_quote_age_seconds: float,
     ) -> PreSubmissionRiskAssessment:
         reasons: list[str] = []
-        current_time = now or datetime.now(timezone.utc)
-        normalized_quote_time = (
-            quote_timestamp.replace(tzinfo=timezone.utc)
-            if quote_timestamp.tzinfo is None
-            else quote_timestamp.astimezone(timezone.utc)
-        )
-        quote_age = abs((current_time - normalized_quote_time).total_seconds())
+        quote_age = observed_quote_age_seconds
 
         if normalized_lots <= 0.0:
             reasons.append("BROKER_NORMALIZED_VOLUME_IS_ZERO")

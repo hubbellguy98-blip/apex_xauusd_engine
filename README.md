@@ -109,6 +109,7 @@ python scripts/mt5_intelligent_demo_runner.py --duration-seconds 300 --execute-o
 
 The intelligent runner continues to require demo mode, limit volume to `0.01` lots, and refuse a new trade while a Gold position is already open.
 In shadow mode it also reports the decision funnel, including live sweeps, reversal candidates, confirmation or quality rejections, the nearest active liquidity level, startup connection retries, and temporary broker quote gaps, without changing the trading thresholds. The confirmation stage enforces the configured London and New York killzone windows exactly rather than treating the full regional session as trade permission.
+Live-feed readiness is confirmed from recently changing MT5 quotes rather than the broker timestamp alone, because broker server clocks may not align with the workstation clock. If quote changes stop for more than five seconds, shadow observations and any final execution gate fail closed.
 
 ## Position Protection Policy
 

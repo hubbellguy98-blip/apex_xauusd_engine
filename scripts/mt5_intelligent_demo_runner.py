@@ -23,6 +23,7 @@ from src.execution.position_tracker import (
     ManagedTradePlanStore,
 )
 from src.execution.position_sizer import InstitutionalPositionSizer
+from src.execution.pre_submission_guard import LiveQuoteActivityMonitor
 from src.execution.risk_firewall import RiskManagementOrchestrator
 from src.infrastructure.broker.mt5_config import load_mt5_config
 from src.infrastructure.broker.mt5_gateway import MT5BrokerGateway
@@ -35,7 +36,7 @@ EXECUTION_CONFIRMATION = "ENABLE_ONE_INTELLIGENT_DEMO_TRADE"
 MANAGEMENT_CONFIRMATION = "ENABLE_BUFFERED_DEMO_TRAILING"
 MAXIMUM_VOLUME = 0.01
 MAXIMUM_ENTRY_SPREAD_PRICE = 0.35
-MAXIMUM_LIVE_QUOTE_AGE_SECONDS = 5.0
+MAXIMUM_LIVE_QUOTE_INACTIVITY_SECONDS = 5.0
 MANAGED_PLAN_PATH = ROOT / ".apex_runtime" / "managed_gold_trade.json"
 
 
@@ -67,12 +68,6 @@ async def connect_with_retry(gateway: MT5BrokerGateway, attempts: int = 3, retry
             await gateway.disconnect()
             await asyncio.sleep(retry_delay_seconds)
     return retries
-
-
-def quote_age_seconds(timestamp: datetime) -> float:
-    """Measure broker tick freshness using UTC regardless of timestamp awareness."""
-    normalized = timestamp.replace(tzinfo=timezone.utc) if timestamp.tzinfo is None else timestamp.astimezone(timezone.utc)
-    return abs((datetime.now(timezone.utc) - normalized).total_seconds())
 
 
 async def refresh_closed_candles(
@@ -264,10 +259,11 @@ async def run_strategy(
                 return 2
 
         previous_signature = None
+        quote_activity = LiveQuoteActivityMonitor(MAXIMUM_LIVE_QUOTE_INACTIVITY_SECONDS)
         live_quotes = 0
         live_closed_candles = 0
         tick_read_failures = 0
-        stale_quote_reads = 0
+        inactive_quote_reads = 0
         qualified = 0
         stop_updates = 0
         entry_submitted_this_run = False
@@ -281,9 +277,9 @@ async def run_strategy(
                 tick_read_failures += 1
                 await asyncio.sleep(poll_seconds)
                 continue
-            tick_age = quote_age_seconds(tick.timestamp)
-            if tick_age > MAXIMUM_LIVE_QUOTE_AGE_SECONDS:
-                stale_quote_reads += 1
+            activity_snapshot = quote_activity.observe(tick)
+            if not activity_snapshot.is_fresh:
+                inactive_quote_reads += 1
                 await asyncio.sleep(poll_seconds)
                 continue
             signature = (tick.timestamp, tick.bid, tick.ask, tick.volume)
@@ -351,6 +347,7 @@ async def run_strategy(
                     ),
                     maximum_currency_risk=risk_snapshot.sizing.currency_risk,
                     maximum_spread_price=MAXIMUM_ENTRY_SPREAD_PRICE,
+                    observed_quote_age_seconds=activity_snapshot.quote_age_seconds,
                 )
                 print(f"pre_submission_approved={pre_submission.is_approved}")
                 print(f"pre_submission_live_entry={pre_submission.live_entry_price:.2f}")
@@ -387,7 +384,8 @@ async def run_strategy(
         print(f"live_quotes_processed={live_quotes}")
         print(f"live_closed_candles_ingested={live_closed_candles}")
         print(f"temporary_tick_gaps={tick_read_failures}")
-        print(f"stale_quote_reads_discarded={stale_quote_reads}")
+        print(f"quote_updates_confirming_live_feed={quote_activity.updates_observed}")
+        print(f"inactive_quote_reads_discarded={inactive_quote_reads}")
         print(f"stop_updates_applied={stop_updates}")
         print(f"qualified_candidates={qualified}")
         diagnostics = detector.diagnostic_snapshot
@@ -397,8 +395,8 @@ async def run_strategy(
         print(f"quality_blocks={diagnostics['quality_blocks']}")
         print(f"cooldown_blocks={diagnostics['cooldown_blocks']}")
         nearest_pool = diagnostics["nearest_active_pool"]
-        if live_quotes == 0 and stale_quote_reads > 0:
-            print("market_data_status=NO_FRESH_LIVE_QUOTES")
+        if live_quotes == 0 and inactive_quote_reads > 0:
+            print("market_data_status=NO_RECENT_TICK_ACTIVITY")
             print("nearest_liquidity_level=NOT_REPORTED_WITHOUT_FRESH_MARKET_PRICE")
         elif nearest_pool:
             print(f"active_liquidity_pools={nearest_pool['active_pool_count']}")
@@ -411,8 +409,8 @@ async def run_strategy(
             print("active_liquidity_pools=0")
         if diagnostics["latest_confirmation_reasons"]:
             print(f"latest_confirmation_rejection={','.join(diagnostics['latest_confirmation_reasons'])}")
-        if live_quotes == 0 and stale_quote_reads > 0:
-            print("status=SHADOW_TEST_INVALID_NO_FRESH_MARKET_QUOTES")
+        if live_quotes == 0 and inactive_quote_reads > 0:
+            print("status=SHADOW_TEST_INVALID_NO_RECENT_TICK_ACTIVITY")
             print("No order sent.")
             return 3
         print("status=NO_QUALIFIED_SIGNAL_BEFORE_TIMEOUT")
