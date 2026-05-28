@@ -131,3 +131,14 @@ python scripts/mt5_intelligent_demo_runner.py --duration-seconds 1800 --execute-
 ```
 
 The runner must remain active while the position is open for automatic trailing changes to be submitted to MT5.
+
+## Windows VPS Updates
+
+After the VPS is cloned from GitHub and verified, update it with:
+
+```powershell
+cd C:\Apex\apex_xauusd_engine
+powershell -ExecutionPolicy Bypass -File .\scripts\windows_vps_update.ps1 -ShadowSeconds 60
+```
+
+The update script pulls the latest GitHub commit, refreshes dependencies, compiles the project and runs the safe VPS verification sequence without enabling order submission.

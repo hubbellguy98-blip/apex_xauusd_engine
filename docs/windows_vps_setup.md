@@ -130,6 +130,25 @@ Do not leave the current strategy unattended until Telegram reporting, daily log
 
 Telegram bot credentials should be added only after the MT5 checks pass. Keep bot tokens in the VPS `.env` file and do not commit them.
 
+## 9. Controlled VPS Updates
+
+When new code is pushed to GitHub, update the VPS from PowerShell:
+
+```powershell
+cd C:\Apex\apex_xauusd_engine
+powershell -ExecutionPolicy Bypass -File .\scripts\windows_vps_update.ps1 -ShadowSeconds 60
+```
+
+This script refuses to run with uncommitted local changes, pulls the latest GitHub commit, refreshes dependencies, compiles the project and runs the safe VPS verification sequence. It does not enable order submission.
+
+Use this faster form only when you intentionally want to skip verification:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows_vps_update.ps1 -SkipVerification
+```
+
+Do not run automatic strategy execution after an update until verification has passed.
+
 The future controlled demo command should remain explicit and capped:
 
 ```powershell
