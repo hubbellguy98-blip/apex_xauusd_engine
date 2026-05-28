@@ -24,6 +24,14 @@ During Python installation, enable:
 - Add Python to PATH
 - pip
 
+After installation, open a new PowerShell window and verify:
+
+```powershell
+git --version
+python --version
+python -m pip --version
+```
+
 ## 3. Log In To XM MT5
 
 1. Open XM MetaTrader 5.
@@ -84,10 +92,17 @@ If the XM terminal path is different, right-click the MT5 desktop shortcut, choo
 
 ## 7. Safe VPS Verification
 
-Run these in order:
+Run the bundled verification helper:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows_vps_verify.ps1 -ShadowSeconds 60
+```
+
+It runs these checks in order:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\mt5_connection_check.py
+.\.venv\Scripts\python.exe scripts\mt5_market_observe.py --duration-seconds 8 --poll-interval-seconds 0.25 --candle-seconds 2
 .\.venv\Scripts\python.exe scripts\mt5_pipeline_dry_run.py
 .\.venv\Scripts\python.exe scripts\mt5_intelligent_demo_runner.py --duration-seconds 60 --poll-seconds 0.25 --warmup-bars 50
 ```
@@ -97,6 +112,7 @@ Expected safe results:
 - MT5 connection OK.
 - Demo account detected.
 - Symbol resolves to the correct Gold/XAUUSD instrument.
+- Read-only market observation processes changing quotes.
 - Dry-run pipeline reaches MT5 validation but sends no order.
 - Shadow runner processes changing quotes and sends no order.
 
@@ -111,6 +127,8 @@ Stop and fix the VPS setup if any of these appear:
 ## 8. Later Continuous Demo Mode
 
 Do not leave the current strategy unattended until Telegram reporting, daily logs and restart recovery are added.
+
+Telegram bot credentials should be added only after the MT5 checks pass. Keep bot tokens in the VPS `.env` file and do not commit them.
 
 The future controlled demo command should remain explicit and capped:
 
