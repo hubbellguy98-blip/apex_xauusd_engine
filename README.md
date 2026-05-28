@@ -142,3 +142,14 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows_vps_update.ps1 -Shado
 ```
 
 The update script pulls the latest GitHub commit, refreshes dependencies, compiles the project and runs the safe VPS verification sequence without enabling order submission.
+
+## Telegram Reporting
+
+The Telegram reporter is observer-only: it records runtime evidence and can send session or daily summaries, but it does not change trading decisions, risk settings, or order routing.
+
+```powershell
+python scripts/telegram_smoke_test.py
+python scripts/telegram_daily_report.py --lookback-hours 24
+```
+
+Configuration lives in the local `.env` file. Keep `APEX_TELEGRAM_ENABLED=false` until `APEX_TELEGRAM_BOT_TOKEN` and `APEX_TELEGRAM_CHAT_ID` are added on the VPS. Full setup notes are in `docs/telegram_reporting.md`.

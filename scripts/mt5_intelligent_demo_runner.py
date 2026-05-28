@@ -27,6 +27,7 @@ from src.execution.pre_submission_guard import LiveQuoteActivityMonitor
 from src.execution.risk_firewall import RiskManagementOrchestrator
 from src.infrastructure.broker.mt5_config import load_mt5_config
 from src.infrastructure.broker.mt5_gateway import MT5BrokerGateway
+from src.infrastructure.telemetry.telegram_reporting import TelegramReportingService
 from src.strategy.confirmation_orchestrator import TradeConfirmationOrchestrator
 from src.strategy.scoring_matrix import TradeScoringOrchestrator
 from src.strategy.setup_detector import MarketSetupOrchestrator
@@ -38,6 +39,16 @@ MAXIMUM_VOLUME = 0.01
 MAXIMUM_ENTRY_SPREAD_PRICE = 0.35
 MAXIMUM_LIVE_QUOTE_INACTIVITY_SECONDS = 5.0
 MANAGED_PLAN_PATH = ROOT / ".apex_runtime" / "managed_gold_trade.json"
+
+
+def resolve_runner_mode(execute_one_demo_trade: bool, manage_open_demo_trade: bool) -> str:
+    if execute_one_demo_trade and manage_open_demo_trade:
+        return "ONE_DEMO_EXECUTION_AND_MANAGEMENT"
+    if manage_open_demo_trade:
+        return "DEMO_POSITION_MANAGEMENT"
+    if execute_one_demo_trade:
+        return "ONE_DEMO_EXECUTION"
+    return "SHADOW_ONLY_NO_ORDER"
 
 
 async def synchronize_positions(state_manager: CentralRuntimeStateManager, gateway: MT5BrokerGateway) -> list:
@@ -153,6 +164,13 @@ async def run_strategy(
     manage_open_demo_trade: bool,
 ) -> int:
     configured = load_mt5_config(ROOT / ".env")
+    mode = resolve_runner_mode(execute_one_demo_trade, manage_open_demo_trade)
+    try:
+        reporting = TelegramReportingService.from_env_file(ROOT / ".env", ROOT)
+    except RuntimeError as exc:
+        print(f"telegram_reporting_status=DISABLED_CONFIG_ERROR reason={exc}")
+        reporting = TelegramReportingService.disabled(ROOT)
+        reporting.record("TELEGRAM_CONFIG_ERROR", "WARNING", reason=str(exc), mode=mode)
     if not configured.dry_run:
         raise RuntimeError("Keep APEX_MT5_DRY_RUN=true; live sending requires one explicit demo invocation.")
     if not configured.require_demo:
@@ -179,6 +197,20 @@ async def run_strategy(
     managed_plan = plan_store.load()
     startup_entry_block = False
     reconciliation_status = "NOT_RECONCILED"
+
+    await reporting.record_and_notify(
+        "RUN_STARTED",
+        "INFO",
+        notify=True,
+        mode=mode,
+        configured_symbol=configured.symbol,
+        dry_run=configured.dry_run,
+        require_demo=configured.require_demo,
+        max_lot=configured.max_lot,
+        duration_seconds=duration_seconds,
+        poll_seconds=poll_seconds,
+        warmup_bars=warmup_bars,
+    )
 
     await state_manager.bootstrap()
     try:
@@ -226,15 +258,6 @@ async def run_strategy(
 
         bias = detector.directional_bias_matrix
         print("MT5 CORE STRATEGY RUNNER")
-        mode = (
-            "ONE_DEMO_EXECUTION_AND_MANAGEMENT"
-            if execute_one_demo_trade and manage_open_demo_trade
-            else "DEMO_POSITION_MANAGEMENT"
-            if manage_open_demo_trade
-            else "ONE_DEMO_EXECUTION"
-            if execute_one_demo_trade
-            else "SHADOW_ONLY_NO_ORDER"
-        )
         print(f"mode={mode}")
         print(f"symbol={symbol}")
         print(f"risk_sizing_source=MT5_ACCOUNT_CURRENCY_{sizing_specification.account_currency}")
@@ -250,11 +273,40 @@ async def run_strategy(
         print(f"structure_pivots={detector.tracked_structural_pivots}")
         print(f"historical_sweeps_cleared={detector.warmup_sweeps_cleared}")
         print(f"bias_1m={bias['1m']}; bias_15m={bias['15m']}; bias_1h={bias['1h']}; bias_4h={bias['4h']}")
+        await reporting.record_and_notify(
+            "RUN_CONNECTED",
+            "INFO",
+            notify=False,
+            mode=mode,
+            symbol=symbol,
+            risk_sizing_source=f"MT5_ACCOUNT_CURRENCY_{sizing_specification.account_currency}",
+            broker_volume_min=sizing_specification.volume_min,
+            broker_volume_step=sizing_specification.volume_step,
+            configured_volume_cap=volume_cap,
+            connection_retries=connection_retries,
+            open_positions_at_start=len(existing_positions),
+            startup_reconciliation=reconciliation_status,
+            historical_bars_processed=len(histories["1m"]),
+            structure_pivots=detector.tracked_structural_pivots,
+            historical_sweeps_cleared=detector.warmup_sweeps_cleared,
+            bias_1m=bias["1m"],
+            bias_15m=bias["15m"],
+            bias_1h=bias["1h"],
+            bias_4h=bias["4h"],
+        )
         if existing_positions and managed_plan is None:
             print("protection_status=OPEN_POSITION_NOT_SAFELY_MATCHED_NO_AUTO_TRAILING")
         if execute_one_demo_trade and existing_positions:
             print("status=BLOCKED_EXISTING_GOLD_POSITION")
             print("No new order sent.")
+            reporting.record(
+                "RUN_BLOCKED",
+                "WARNING",
+                mode=mode,
+                symbol=symbol,
+                status="BLOCKED_EXISTING_GOLD_POSITION",
+                open_positions=len(existing_positions),
+            )
             if not manage_open_demo_trade:
                 return 2
 
@@ -268,6 +320,50 @@ async def run_strategy(
         stop_updates = 0
         entry_submitted_this_run = False
         started = asyncio.get_running_loop().time()
+
+        async def emit_run_summary(status: str, severity: str = "INFO") -> None:
+            diagnostics = detector.diagnostic_snapshot
+            nearest_pool = diagnostics["nearest_active_pool"]
+            nearest_liquidity_level = (
+                {
+                    "side": nearest_pool["side"],
+                    "price": nearest_pool["level_price"],
+                    "distance": nearest_pool["distance"],
+                    "active_pool_count": nearest_pool["active_pool_count"],
+                }
+                if nearest_pool and live_quotes > 0
+                else None
+            )
+            latest_confirmation_rejection = (
+                ",".join(diagnostics["latest_confirmation_reasons"])
+                if diagnostics["latest_confirmation_reasons"]
+                else None
+            )
+            summary = {
+                "mode": mode,
+                "symbol": symbol,
+                "status": status,
+                "dry_run": gateway_config.dry_run,
+                "require_demo": gateway_config.require_demo,
+                "max_lot": gateway_config.max_lot,
+                "live_quotes_processed": live_quotes,
+                "live_closed_candles_ingested": live_closed_candles,
+                "temporary_tick_gaps": tick_read_failures,
+                "quote_updates_confirming_live_feed": quote_activity.updates_observed,
+                "inactive_quote_reads_discarded": inactive_quote_reads,
+                "stop_updates_applied": stop_updates,
+                "qualified_candidates": qualified,
+                "live_sweeps_detected": diagnostics["live_sweeps_detected"],
+                "reversal_candidates_detected": diagnostics["reversal_candidates_detected"],
+                "confirmation_blocks": diagnostics["confirmation_blocks"],
+                "quality_blocks": diagnostics["quality_blocks"],
+                "cooldown_blocks": diagnostics["cooldown_blocks"],
+                "nearest_liquidity_level": nearest_liquidity_level,
+                "latest_confirmation_rejection": latest_confirmation_rejection,
+            }
+            reporting.record("RUN_SUMMARY", severity, **summary)
+            await reporting.send_session_summary(summary)
+
         while asyncio.get_running_loop().time() - started < duration_seconds:
             try:
                 tick = gateway.read_current_tick()
@@ -310,6 +406,15 @@ async def run_strategy(
             for setup, confirmation_snapshot in detector.drain_qualified_candidates():
                 if startup_entry_block or managed_plan is not None or entry_submitted_this_run:
                     print("candidate_status=BLOCKED_SINGLE_ACTIVE_OR_ALREADY_SUBMITTED_TRADE")
+                    reporting.record(
+                        "CANDIDATE_BLOCKED",
+                        "INFO",
+                        mode=mode,
+                        symbol=symbol,
+                        setup_id=setup.id,
+                        direction=setup.direction.value,
+                        reasons=["SINGLE_ACTIVE_OR_ALREADY_SUBMITTED_TRADE"],
+                    )
                     continue
                 ranked = await scoring.process_and_rank_setup(setup, confirmation_snapshot)
                 approved, risk_snapshot = await risk.evaluate_trade_entry_gate(
@@ -318,18 +423,63 @@ async def run_strategy(
                 if not ranked.is_live_executable or not approved:
                     reasons = ranked.rejection_payload + risk_snapshot.rejection_reasons
                     print(f"candidate_status=BLOCKED_BY_SCORING_OR_RISK; reason={','.join(reasons)}")
+                    reporting.record(
+                        "CANDIDATE_BLOCKED",
+                        "INFO",
+                        mode=mode,
+                        symbol=symbol,
+                        setup_id=setup.id,
+                        direction=setup.direction.value,
+                        setup_type=setup.setup_type.value,
+                        timeframe=setup.timeframe,
+                        final_score=ranked.score_breakdown.normalized_final_score,
+                        risk_approved=approved,
+                        reasons=reasons,
+                    )
                     continue
                 qualified += 1
                 print(f"qualified_direction={setup.direction.value}")
                 print(f"qualified_score={ranked.score_breakdown.normalized_final_score:.2f}")
                 print(f"qualified_lots={risk_snapshot.sizing.calculated_lots:.2f}")
+                await reporting.record_and_notify(
+                    "RISK_APPROVED",
+                    "INFO",
+                    notify=not execute_one_demo_trade,
+                    mode=mode,
+                    symbol=symbol,
+                    setup_id=setup.id,
+                    direction=setup.direction.value,
+                    setup_type=setup.setup_type.value,
+                    timeframe=setup.timeframe,
+                    entry_price=setup.entry_price,
+                    stop_loss=setup.stop_loss,
+                    take_profit=setup.take_profit,
+                    estimated_rr=setup.estimated_rr,
+                    confidence_score=setup.confidence_score,
+                    final_score=ranked.score_breakdown.normalized_final_score,
+                    calculated_lots=risk_snapshot.sizing.calculated_lots,
+                    currency_risk=risk_snapshot.sizing.currency_risk,
+                    risk_pct=risk_snapshot.sizing.risk_percentage_applied,
+                    status="QUALIFIED_SHADOW_SIGNAL_NO_ORDER_SENT"
+                    if not execute_one_demo_trade
+                    else "QUALIFIED_FOR_DEMO_EXECUTION",
+                )
                 if not execute_one_demo_trade:
                     print("status=QUALIFIED_SHADOW_SIGNAL_NO_ORDER_SENT")
+                    await emit_run_summary("QUALIFIED_SHADOW_SIGNAL_NO_ORDER_SENT")
                     return 0
 
                 if await synchronize_positions(state_manager, gateway):
                     print("status=BLOCKED_POSITION_OPENED_DURING_MONITOR")
                     print("No new order sent.")
+                    reporting.record(
+                        "RUN_BLOCKED",
+                        "WARNING",
+                        mode=mode,
+                        symbol=symbol,
+                        status="BLOCKED_POSITION_OPENED_DURING_MONITOR",
+                    )
+                    await emit_run_summary("BLOCKED_POSITION_OPENED_DURING_MONITOR", "WARNING")
                     return 2
 
                 token = uuid4().hex[:12]
@@ -359,7 +509,32 @@ async def run_strategy(
                 print(f"broker_order_id={report.broker_order_id}")
                 print(f"filled_quantity={report.filled_quantity:.2f}")
                 print(f"rejection_reason={report.rejection_reason}")
+                reporting.record(
+                    "PRE_SUBMISSION_CHECK",
+                    "INFO" if pre_submission.is_approved else "WARNING",
+                    mode=mode,
+                    symbol=symbol,
+                    setup_id=setup.id,
+                    pre_submission_approved=pre_submission.is_approved,
+                    live_entry_price=pre_submission.live_entry_price,
+                    currency_risk=pre_submission.currency_risk,
+                    quote_age_seconds=pre_submission.quote_age_seconds,
+                    rejection_reasons=pre_submission.rejection_reasons,
+                )
+                await reporting.record_and_notify(
+                    "ORDER_RESULT",
+                    "INFO" if report.status == OrderStatus.FILLED else "WARNING",
+                    notify=True,
+                    mode=mode,
+                    symbol=symbol,
+                    setup_id=setup.id,
+                    order_status=report.status.value,
+                    broker_order_id=report.broker_order_id,
+                    filled_quantity=report.filled_quantity,
+                    rejection_reason=report.rejection_reason,
+                )
                 if report.status != OrderStatus.FILLED:
+                    await emit_run_summary(report.status.value, "WARNING")
                     return 1
                 entry_submitted_this_run = True
                 filled_positions = await gateway.query_live_positions()
@@ -377,6 +552,7 @@ async def run_strategy(
                     print(f"protection_plan_saved_for_ticket={filled.ticket}")
                 if not manage_open_demo_trade:
                     print("Rerun with explicitly authorized position management to trail this managed trade.")
+                    await emit_run_summary("DEMO_ORDER_FILLED_MANAGEMENT_NOT_ENABLED")
                     return 0
 
             await asyncio.sleep(poll_seconds)
@@ -395,10 +571,17 @@ async def run_strategy(
         print(f"quality_blocks={diagnostics['quality_blocks']}")
         print(f"cooldown_blocks={diagnostics['cooldown_blocks']}")
         nearest_pool = diagnostics["nearest_active_pool"]
+        nearest_liquidity_level = None
         if live_quotes == 0 and inactive_quote_reads > 0:
             print("market_data_status=NO_RECENT_TICK_ACTIVITY")
             print("nearest_liquidity_level=NOT_REPORTED_WITHOUT_FRESH_MARKET_PRICE")
         elif nearest_pool:
+            nearest_liquidity_level = {
+                "side": nearest_pool["side"],
+                "price": nearest_pool["level_price"],
+                "distance": nearest_pool["distance"],
+                "active_pool_count": nearest_pool["active_pool_count"],
+            }
             print(f"active_liquidity_pools={nearest_pool['active_pool_count']}")
             print(
                 f"nearest_liquidity_level={nearest_pool['side']} "
@@ -407,15 +590,69 @@ async def run_strategy(
             )
         else:
             print("active_liquidity_pools=0")
+        latest_confirmation_rejection = None
         if diagnostics["latest_confirmation_reasons"]:
-            print(f"latest_confirmation_rejection={','.join(diagnostics['latest_confirmation_reasons'])}")
+            latest_confirmation_rejection = ",".join(diagnostics["latest_confirmation_reasons"])
+            print(f"latest_confirmation_rejection={latest_confirmation_rejection}")
         if live_quotes == 0 and inactive_quote_reads > 0:
             print("status=SHADOW_TEST_INVALID_NO_RECENT_TICK_ACTIVITY")
             print("No order sent.")
+            summary = {
+                "mode": mode,
+                "symbol": symbol,
+                "status": "SHADOW_TEST_INVALID_NO_RECENT_TICK_ACTIVITY",
+                "dry_run": gateway_config.dry_run,
+                "require_demo": gateway_config.require_demo,
+                "max_lot": gateway_config.max_lot,
+                "live_quotes_processed": live_quotes,
+                "live_closed_candles_ingested": live_closed_candles,
+                "temporary_tick_gaps": tick_read_failures,
+                "quote_updates_confirming_live_feed": quote_activity.updates_observed,
+                "inactive_quote_reads_discarded": inactive_quote_reads,
+                "stop_updates_applied": stop_updates,
+                "qualified_candidates": qualified,
+                "live_sweeps_detected": diagnostics["live_sweeps_detected"],
+                "reversal_candidates_detected": diagnostics["reversal_candidates_detected"],
+                "confirmation_blocks": diagnostics["confirmation_blocks"],
+                "quality_blocks": diagnostics["quality_blocks"],
+                "cooldown_blocks": diagnostics["cooldown_blocks"],
+                "nearest_liquidity_level": nearest_liquidity_level,
+                "latest_confirmation_rejection": latest_confirmation_rejection,
+            }
+            reporting.record("RUN_SUMMARY", "WARNING", **summary)
+            await reporting.send_session_summary(summary)
             return 3
         print("status=NO_QUALIFIED_SIGNAL_BEFORE_TIMEOUT")
         print("No order sent.")
+        summary = {
+            "mode": mode,
+            "symbol": symbol,
+            "status": "NO_QUALIFIED_SIGNAL_BEFORE_TIMEOUT",
+            "dry_run": gateway_config.dry_run,
+            "require_demo": gateway_config.require_demo,
+            "max_lot": gateway_config.max_lot,
+            "live_quotes_processed": live_quotes,
+            "live_closed_candles_ingested": live_closed_candles,
+            "temporary_tick_gaps": tick_read_failures,
+            "quote_updates_confirming_live_feed": quote_activity.updates_observed,
+            "inactive_quote_reads_discarded": inactive_quote_reads,
+            "stop_updates_applied": stop_updates,
+            "qualified_candidates": qualified,
+            "live_sweeps_detected": diagnostics["live_sweeps_detected"],
+            "reversal_candidates_detected": diagnostics["reversal_candidates_detected"],
+            "confirmation_blocks": diagnostics["confirmation_blocks"],
+            "quality_blocks": diagnostics["quality_blocks"],
+            "cooldown_blocks": diagnostics["cooldown_blocks"],
+            "nearest_liquidity_level": nearest_liquidity_level,
+            "latest_confirmation_rejection": latest_confirmation_rejection,
+        }
+        reporting.record("RUN_SUMMARY", "INFO", **summary)
+        await reporting.send_session_summary(summary)
         return 0
+    except Exception as exc:
+        reporting.record("RUN_ERROR", "ERROR", mode=mode, error=str(exc))
+        await reporting.notify("Apex Runner Error", {"mode": mode, "error": str(exc)}, "ERROR")
+        raise
     finally:
         if risk is not None:
             await risk.terminate()
