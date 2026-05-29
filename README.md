@@ -153,3 +153,14 @@ python scripts/telegram_daily_report.py --lookback-hours 24
 ```
 
 Configuration lives in the local `.env` file. Keep `APEX_TELEGRAM_ENABLED=false` until `APEX_TELEGRAM_BOT_TOKEN` and `APEX_TELEGRAM_CHAT_ID` are added on the VPS. Full setup notes are in `docs/telegram_reporting.md`.
+
+## Windows VPS 24/7 Shadow Mode
+
+The first 24/7 mode is intentionally shadow/reporting only. It keeps collecting live MT5 evidence and Telegram reports without passing any order-submission flags.
+
+```powershell
+cd C:\Apex\apex_xauusd_engine
+powershell -ExecutionPolicy Bypass -File .\scripts\windows_vps_install_shadow_task.ps1 -StartNow
+```
+
+See `docs/windows_vps_24x7_shadow.md` for status, stop, restart, and removal commands.
