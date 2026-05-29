@@ -164,3 +164,14 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows_vps_install_shadow_ta
 ```
 
 By default, the daily report is sent at `22:05 UTC`, just after the next Asian session starts, and covers the previous 24-hour Asia-to-Asia trading cycle. See `docs/windows_vps_24x7_shadow.md` for status, stop, restart, and removal commands.
+
+## Windows VPS 24/7 Demo Execution
+
+After shadow mode is verified, the VPS can be switched to actual demo-account execution. This mode still requires `APEX_MT5_REQUIRE_DEMO=true`, keeps the local `.env` dry-run flag set to true, limits volume to `0.01`, stops the shadow task, and passes the runner's explicit demo-execution confirmation flags.
+
+```powershell
+cd C:\Apex\apex_xauusd_engine
+powershell -ExecutionPolicy Bypass -File .\scripts\windows_vps_install_demo_task.ps1 -StartNow
+```
+
+Demo execution does not force an immediate trade; it permits one demo trade only after the strategy, scoring, risk, quote freshness, and MT5 checks all approve. See `docs/windows_vps_24x7_demo_execution.md`.
