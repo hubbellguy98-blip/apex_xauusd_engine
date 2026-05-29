@@ -171,6 +171,7 @@ class DailyReportBuilder:
         latest_summary = summary_events[-1].payload if summary_events else {}
         event_counts = Counter(event.event_type for event in self.events)
         severity_counts = Counter(event.severity for event in self.events)
+        session_metrics = _summarize_by_session(summary_events)
         rejection_counts = Counter(
             str(event.payload.get("rejection_reason") or event.payload.get("latest_confirmation_rejection"))
             for event in self.events
@@ -222,6 +223,17 @@ class DailyReportBuilder:
             f"Errors: {severity_counts['ERROR'] + severity_counts['CRITICAL']}",
             f"Telegram delivery failures: {event_counts['TELEGRAM_DELIVERY_FAILED']}",
         ]
+        if session_metrics:
+            lines.extend(["", "<b>Session Breakdown</b>"])
+            for session_name in ("ASIAN_ACCUMULATION", "LONDON_KILLZONE", "NEWYORK_KILLZONE", "POST_NY_RESET"):
+                metrics = session_metrics.get(session_name)
+                if not metrics:
+                    continue
+                lines.append(
+                    f"{session_name}: runs={metrics['runs']} quotes={metrics['live_quotes']} "
+                    f"sweeps={metrics['sweeps']} reversals={metrics['reversals']} "
+                    f"qualified={metrics['qualified']} blocks={metrics['blocks']}"
+                )
         if rejection_counts:
             lines.extend(["", "<b>Top Rejections</b>"])
             lines.extend(f"{html_escape(reason)}: {count}" for reason, count in rejection_counts.most_common(5))
@@ -320,6 +332,39 @@ def _as_list(value: Any) -> list[str]:
 def _looks_sensitive(key: str) -> bool:
     lowered = key.lower()
     return any(marker in lowered for marker in ("password", "token", "secret", "key"))
+
+
+def _summarize_by_session(summary_events: list[RuntimeEvent]) -> dict[str, dict[str, int]]:
+    metrics: dict[str, dict[str, int]] = {}
+    for event in summary_events:
+        session_name = _session_bucket(event.timestamp_utc)
+        bucket = metrics.setdefault(
+            session_name,
+            {"runs": 0, "live_quotes": 0, "sweeps": 0, "reversals": 0, "qualified": 0, "blocks": 0},
+        )
+        payload = event.payload
+        bucket["runs"] += 1
+        bucket["live_quotes"] += int(payload.get("live_quotes_processed", 0) or 0)
+        bucket["sweeps"] += int(payload.get("live_sweeps_detected", 0) or 0)
+        bucket["reversals"] += int(payload.get("reversal_candidates_detected", 0) or 0)
+        bucket["qualified"] += int(payload.get("qualified_candidates", 0) or 0)
+        bucket["blocks"] += int(payload.get("confirmation_blocks", 0) or 0)
+        bucket["blocks"] += int(payload.get("quality_blocks", 0) or 0)
+        bucket["blocks"] += int(payload.get("cooldown_blocks", 0) or 0)
+    return metrics
+
+
+def _session_bucket(timestamp_utc: datetime) -> str:
+    hour = timestamp_utc.astimezone(timezone.utc).hour
+    if hour >= 22 or hour < 6:
+        return "ASIAN_ACCUMULATION"
+    if 6 <= hour < 12:
+        return "LONDON_KILLZONE"
+    if 12 <= hour < 20:
+        return "NEWYORK_KILLZONE"
+    return "POST_NY_RESET"
+
+
 async def maybe_send_daily_report(env_path: Path, repo_root: Path, lookback_hours: int | None = None) -> str:
     service = TelegramReportingService.from_env_file(env_path, repo_root)
     return await service.send_daily_report(lookback_hours)

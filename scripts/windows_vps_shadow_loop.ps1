@@ -3,7 +3,9 @@ param(
     [double]$PollSeconds = 0.25,
     [int]$WarmupBars = 50,
     [int]$RestSeconds = 5,
-    [int]$DailyReportEveryHours = 24,
+    [int]$DailyReportHourUtc = 22,
+    [int]$DailyReportMinuteUtc = 5,
+    [int]$DailyReportLookbackHours = 24,
     [switch]$DailyReportOnStart
 )
 
@@ -56,17 +58,40 @@ function Write-LoopLog {
     Write-Host "[$Stamp] $Message"
 }
 
+function Get-NextDailyReportDueUtc {
+    param(
+        [DateTime]$ReferenceUtc,
+        [int]$HourUtc,
+        [int]$MinuteUtc
+    )
+    $Candidate = [DateTime]::SpecifyKind(
+        [DateTime]::new($ReferenceUtc.Year, $ReferenceUtc.Month, $ReferenceUtc.Day, $HourUtc, $MinuteUtc, 0),
+        [DateTimeKind]::Utc
+    )
+    if ($Candidate -le $ReferenceUtc) {
+        $Candidate = $Candidate.AddDays(1)
+    }
+    return $Candidate
+}
+
 Assert-SafeShadowConfiguration
 
-$LastDailyReportAt = [DateTime]::MinValue
-if ($DailyReportOnStart) {
-    $LastDailyReportAt = (Get-Date).AddHours(-1 * $DailyReportEveryHours)
-}
+$NextDailyReportAtUtc = Get-NextDailyReportDueUtc `
+    -ReferenceUtc ([DateTime]::UtcNow) `
+    -HourUtc $DailyReportHourUtc `
+    -MinuteUtc $DailyReportMinuteUtc
 
 Write-LoopLog "Apex 24/7 shadow supervisor started."
 Write-LoopLog "Project: $ProjectRoot"
 Write-LoopLog "SessionSeconds=$SessionSeconds PollSeconds=$PollSeconds WarmupBars=$WarmupBars RestSeconds=$RestSeconds"
+Write-LoopLog "Daily report due UTC: $($NextDailyReportAtUtc.ToString('yyyy-MM-dd HH:mm:ss'))"
 Write-LoopLog "Order submission is NOT enabled by this supervisor."
+
+if ($DailyReportOnStart) {
+    $ReportLog = Join-Path $LogRoot "telegram_daily_report_$((Get-Date).ToString('yyyyMMdd_HHmmss')).log"
+    Write-LoopLog "Generating startup Telegram daily report. Log: $ReportLog"
+    & $VenvPython scripts\telegram_daily_report.py --lookback-hours $DailyReportLookbackHours 2>&1 | Tee-Object -FilePath $ReportLog
+}
 
 while ($true) {
     $StartedAt = Get-Date
@@ -87,13 +112,16 @@ while ($true) {
         $_ | Out-File -FilePath $RunLog -Append
     }
 
-    $HoursSinceReport = ((Get-Date) - $LastDailyReportAt).TotalHours
-    if ($HoursSinceReport -ge $DailyReportEveryHours) {
+    if ([DateTime]::UtcNow -ge $NextDailyReportAtUtc) {
         $ReportLog = Join-Path $LogRoot "telegram_daily_report_$((Get-Date).ToString('yyyyMMdd_HHmmss')).log"
         Write-LoopLog "Generating Telegram daily report. Log: $ReportLog"
         try {
-            & $VenvPython scripts\telegram_daily_report.py --lookback-hours 24 2>&1 | Tee-Object -FilePath $ReportLog
-            $LastDailyReportAt = Get-Date
+            & $VenvPython scripts\telegram_daily_report.py --lookback-hours $DailyReportLookbackHours 2>&1 | Tee-Object -FilePath $ReportLog
+            $NextDailyReportAtUtc = Get-NextDailyReportDueUtc `
+                -ReferenceUtc ([DateTime]::UtcNow) `
+                -HourUtc $DailyReportHourUtc `
+                -MinuteUtc $DailyReportMinuteUtc
+            Write-LoopLog "Next daily report due UTC: $($NextDailyReportAtUtc.ToString('yyyy-MM-dd HH:mm:ss'))"
         }
         catch {
             Write-LoopLog "Daily report failed: $($_.Exception.Message)"

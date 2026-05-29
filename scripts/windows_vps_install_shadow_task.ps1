@@ -4,7 +4,10 @@ param(
     [double]$PollSeconds = 0.25,
     [int]$WarmupBars = 50,
     [int]$RestSeconds = 5,
-    [int]$DailyReportEveryHours = 24,
+    [int]$DailyReportHourUtc = 22,
+    [int]$DailyReportMinuteUtc = 5,
+    [int]$DailyReportLookbackHours = 24,
+    [switch]$DailyReportOnStart,
     [switch]$StartNow
 )
 
@@ -25,9 +28,14 @@ $Argument = @(
     "-PollSeconds", $PollSeconds,
     "-WarmupBars", $WarmupBars,
     "-RestSeconds", $RestSeconds,
-    "-DailyReportEveryHours", $DailyReportEveryHours,
-    "-DailyReportOnStart"
+    "-DailyReportHourUtc", $DailyReportHourUtc,
+    "-DailyReportMinuteUtc", $DailyReportMinuteUtc,
+    "-DailyReportLookbackHours", $DailyReportLookbackHours
 ) -join " "
+
+if ($DailyReportOnStart) {
+    $Argument = "$Argument -DailyReportOnStart"
+}
 
 $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $Argument -WorkingDirectory $ProjectRoot
 $Trigger = New-ScheduledTaskTrigger -AtLogOn
@@ -51,6 +59,7 @@ Register-ScheduledTask `
 
 Write-Host "Installed scheduled task: $TaskName"
 Write-Host "Mode: shadow/reporting only. No order submission flags are used."
+Write-Host "Daily report time: $($DailyReportHourUtc.ToString('00')):$($DailyReportMinuteUtc.ToString('00')) UTC"
 Write-Host "The task starts when the current Windows user logs in. Disconnecting RDP should not stop it; signing out will."
 
 if ($StartNow) {

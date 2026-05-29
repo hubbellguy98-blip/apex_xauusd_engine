@@ -60,6 +60,35 @@ def test_daily_report_summarizes_key_runtime_metrics() -> None:
     assert "GOLD.i#" in report
     assert "Live quotes processed: 25" in report
     assert "LOW_SCORE: 1" in report
+    assert "Session Breakdown" in report
+
+
+def test_daily_report_groups_run_summaries_by_session() -> None:
+    events = [
+        _event(
+            datetime(2026, 5, 29, 22, 10, tzinfo=timezone.utc),
+            "RUN_SUMMARY",
+            "INFO",
+            symbol="GOLD.i#",
+            mode="SHADOW_ONLY_NO_ORDER",
+            live_quotes_processed=10,
+            live_sweeps_detected=2,
+        ),
+        _event(
+            datetime(2026, 5, 29, 12, 10, tzinfo=timezone.utc),
+            "RUN_SUMMARY",
+            "INFO",
+            symbol="GOLD.i#",
+            mode="SHADOW_ONLY_NO_ORDER",
+            live_quotes_processed=5,
+            confirmation_blocks=1,
+        ),
+    ]
+
+    report = DailyReportBuilder(events, lookback_hours=24).build_text_report()
+
+    assert "ASIAN_ACCUMULATION: runs=1 quotes=10 sweeps=2" in report
+    assert "NEWYORK_KILLZONE: runs=1 quotes=5 sweeps=0" in report
 
 
 def test_compact_message_escapes_html_and_hides_sensitive_fields() -> None:

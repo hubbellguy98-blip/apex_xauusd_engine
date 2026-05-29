@@ -36,8 +36,11 @@ Default behavior:
 - Runs a 15-minute shadow session.
 - Waits 5 seconds.
 - Starts the next shadow session.
-- Sends a daily report every 24 hours.
+- Sends the daily report at `22:05 UTC`, five minutes after the configured Asian session starts.
+- The report looks back 24 hours, so each report covers one Asia-to-next-Asia trading day cycle.
 - Writes logs to `.apex_runtime\logs`.
+
+`22:05 UTC` is `03:35 IST`. This timing is intentional because the strategy's session engine defines Asian accumulation as `22:00-06:00 UTC`.
 
 ## Check Status
 

@@ -163,4 +163,4 @@ cd C:\Apex\apex_xauusd_engine
 powershell -ExecutionPolicy Bypass -File .\scripts\windows_vps_install_shadow_task.ps1 -StartNow
 ```
 
-See `docs/windows_vps_24x7_shadow.md` for status, stop, restart, and removal commands.
+By default, the daily report is sent at `22:05 UTC`, just after the next Asian session starts, and covers the previous 24-hour Asia-to-Asia trading cycle. See `docs/windows_vps_24x7_shadow.md` for status, stop, restart, and removal commands.
