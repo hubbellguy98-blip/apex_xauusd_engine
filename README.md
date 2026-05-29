@@ -82,15 +82,15 @@ Automatic strategy-driven demo execution is intentionally not enabled by default
 
 ## Minimal Demo Execution
 
-The following scripts enable explicitly confirmed demo-account trades only. They require `APEX_MT5_DRY_RUN=true`, `APEX_MT5_REQUIRE_DEMO=true`, and `APEX_MAX_LOT=0.01` in `.env`.
+The following scripts enable explicitly confirmed demo-account trades only. They require `APEX_MT5_DRY_RUN=true`, `APEX_MT5_REQUIRE_DEMO=true`, and `APEX_MAX_LOT=0.03` in `.env` by default. The hard demo safety ceiling is `0.05`.
 
 ```powershell
 python scripts/mt5_demo_trade_smoke_test.py --confirm-demo-order EXECUTE_ONE_DEMO_ORDER --direction BUY
 python scripts/mt5_demo_auto_trigger.py --confirm-demo-auto ENABLE_ONE_DEMO_AUTO_TRADE
 ```
 
-- `mt5_demo_trade_smoke_test.py` sends one requested `0.01` lot demo Gold trade.
-- `mt5_demo_auto_trigger.py` waits for a small live price movement, then sends at most one `0.01` lot demo Gold trade.
+- `mt5_demo_trade_smoke_test.py` sends one requested `0.03` lot demo Gold trade.
+- `mt5_demo_auto_trigger.py` waits for a small live price movement, then sends at most the configured capped demo Gold trade size.
 - The automatic trigger refuses to submit while any Gold position is already open.
 
 ## Intelligent Demo Runner
@@ -107,7 +107,7 @@ The default command is shadow-only and cannot submit an order. After observing q
 python scripts/mt5_intelligent_demo_runner.py --duration-seconds 300 --execute-one-demo --confirm-execution ENABLE_ONE_INTELLIGENT_DEMO_TRADE
 ```
 
-The intelligent runner continues to require demo mode, limit volume to `0.01` lots, and refuse a new trade while a Gold position is already open.
+The intelligent runner continues to require demo mode, limit configured volume to `0.05` lots, and refuse a new trade while a Gold position is already open.
 In shadow mode it also reports the decision funnel, including live sweeps, reversal candidates, confirmation or quality rejections, the nearest active liquidity level, startup connection retries, and temporary broker quote gaps, without changing the trading thresholds. The confirmation stage enforces the configured London and New York killzone windows exactly rather than treating the full regional session as trade permission.
 Live-feed readiness is confirmed from recently changing MT5 quotes rather than the broker timestamp alone, because broker server clocks may not align with the workstation clock. If quote changes stop for more than five seconds, shadow observations and any final execution gate fail closed.
 
@@ -167,7 +167,7 @@ By default, the daily report is sent at `22:05 UTC`, just after the next Asian s
 
 ## Windows VPS 24/7 Demo Execution
 
-After shadow mode is verified, the VPS can be switched to actual demo-account execution. This mode still requires `APEX_MT5_REQUIRE_DEMO=true`, keeps the local `.env` dry-run flag set to true, limits volume to `0.01`, stops the shadow task, and passes the runner's explicit demo-execution confirmation flags.
+After shadow mode is verified, the VPS can be switched to actual demo-account execution. This mode still requires `APEX_MT5_REQUIRE_DEMO=true`, keeps the local `.env` dry-run flag set to true, defaults configured volume to `0.03`, caps volume at `0.05`, stops the shadow task, and passes the runner's explicit demo-execution confirmation flags.
 
 ```powershell
 cd C:\Apex\apex_xauusd_engine

@@ -47,8 +47,8 @@ function Assert-SafeDemoConfiguration {
     if ($EnvValues["APEX_MT5_REQUIRE_DEMO"] -ne "true") {
         throw "Demo execution loop requires APEX_MT5_REQUIRE_DEMO=true."
     }
-    if ([double]$EnvValues["APEX_MAX_LOT"] -gt 0.01) {
-        throw "Demo execution loop requires APEX_MAX_LOT=0.01 or lower."
+    if ([double]$EnvValues["APEX_MAX_LOT"] -gt 0.05) {
+        throw "Demo execution loop requires APEX_MAX_LOT=0.05 or lower."
     }
     if ($EnvValues["APEX_TELEGRAM_ENABLED"] -ne "true") {
         throw "Demo execution loop requires APEX_TELEGRAM_ENABLED=true so trade activity is reported."
@@ -89,7 +89,7 @@ Write-LoopLog "Project: $ProjectRoot"
 Write-LoopLog "SessionSeconds=$SessionSeconds PollSeconds=$PollSeconds WarmupBars=$WarmupBars RestSeconds=$RestSeconds"
 Write-LoopLog "Daily report due UTC: $($NextDailyReportAtUtc.ToString('yyyy-MM-dd HH:mm:ss'))"
 Write-LoopLog "Actual DEMO order submission is enabled only through explicit runner confirmation flags."
-Write-LoopLog "The strategy still enforces one Gold position at a time and max 0.01 lots."
+Write-LoopLog "The strategy still enforces one Gold position at a time and max 0.05 lots."
 
 if ($DailyReportOnStart) {
     $ReportLog = Join-Path $LogRoot "telegram_daily_report_$((Get-Date).ToString('yyyyMMdd_HHmmss')).log"

@@ -31,7 +31,7 @@ from src.infrastructure.broker.mt5_gateway import MT5BrokerGateway
 from src.strategy.scoring_matrix import TradeScoringOrchestrator
 from src.strategy.state_manager import CentralRuntimeStateManager
 
-VALIDATION_VOLUME_CAP = 0.01
+VALIDATION_VOLUME_CAP = 0.05
 MAXIMUM_ENTRY_SPREAD_PRICE = 0.35
 MAXIMUM_LIVE_QUOTE_INACTIVITY_SECONDS = 5.0
 

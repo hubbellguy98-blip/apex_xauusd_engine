@@ -34,7 +34,7 @@ async def main() -> int:
             client_order_id=f"MT5_CHECK_{int(datetime.now(timezone.utc).timestamp())}",
             symbol=symbol,
             direction=OrderDirection.BUY,
-            quantity_lots=min(config.max_lot, 0.01),
+            quantity_lots=min(config.max_lot, 0.05),
             entry_price=entry,
             stop_loss=entry - 5.0,
             take_profit=entry + 10.0,

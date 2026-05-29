@@ -20,15 +20,16 @@ from src.infrastructure.broker.mt5_config import load_mt5_config
 from src.infrastructure.broker.mt5_gateway import MT5BrokerGateway
 
 CONFIRMATION_TEXT = "EXECUTE_ONE_DEMO_ORDER"
-SMOKE_TEST_VOLUME = 0.01
+SMOKE_TEST_VOLUME = 0.03
+MAXIMUM_VOLUME = 0.05
 
 
 async def submit_demo_smoke_trade(direction: OrderDirection) -> int:
     configured = load_mt5_config(ROOT / ".env")
     if not configured.require_demo:
         raise RuntimeError("Refusing demo trade because APEX_MT5_REQUIRE_DEMO is not true.")
-    if configured.max_lot > SMOKE_TEST_VOLUME:
-        raise RuntimeError("Refusing demo smoke trade because APEX_MAX_LOT must be 0.01 or lower.")
+    if configured.max_lot > MAXIMUM_VOLUME:
+        raise RuntimeError("Refusing demo smoke trade because APEX_MAX_LOT must be 0.05 or lower.")
 
     # Enable sending for this explicitly confirmed invocation only; .env remains in safe dry-run mode.
     live_demo_config = replace(configured, dry_run=False, max_lot=min(configured.max_lot, SMOKE_TEST_VOLUME))

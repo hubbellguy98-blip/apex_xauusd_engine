@@ -16,7 +16,7 @@ class MT5GatewayConfig:
     symbol: str
     dry_run: bool = True
     require_demo: bool = True
-    max_lot: float = 0.01
+    max_lot: float = 0.03
     deviation_points: int = 20
     magic_number: int = 260525
 
@@ -61,7 +61,7 @@ def load_mt5_config(env_path: Optional[Path] = None) -> MT5GatewayConfig:
         symbol=values.get("APEX_SYMBOL", "XAUUSD"),
         dry_run=_as_bool(values.get("APEX_MT5_DRY_RUN", "true"), True),
         require_demo=_as_bool(values.get("APEX_MT5_REQUIRE_DEMO", "true"), True),
-        max_lot=float(values.get("APEX_MAX_LOT", "0.01")),
+        max_lot=float(values.get("APEX_MAX_LOT", "0.03")),
         deviation_points=int(values.get("APEX_MT5_DEVIATION_POINTS", "20")),
         magic_number=int(values.get("APEX_MT5_MAGIC", "260525")),
     )

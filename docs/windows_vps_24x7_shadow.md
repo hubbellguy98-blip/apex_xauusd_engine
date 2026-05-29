@@ -19,7 +19,7 @@ Keep the safe `.env` settings:
 ```text
 APEX_MT5_DRY_RUN=true
 APEX_MT5_REQUIRE_DEMO=true
-APEX_MAX_LOT=0.01
+APEX_MAX_LOT=0.03
 ```
 
 ## Install And Start

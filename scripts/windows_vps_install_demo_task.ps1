@@ -67,7 +67,7 @@ Register-ScheduledTask `
 Write-Host "Installed scheduled task: $TaskName"
 Write-Host "Mode: ACTUAL DEMO EXECUTION with protected management."
 Write-Host "Daily report time: $($DailyReportHourUtc.ToString('00')):$($DailyReportMinuteUtc.ToString('00')) UTC"
-Write-Host "Safety gates: demo account required, dry-run env must remain true, max lot must be 0.01 or lower."
+Write-Host "Safety gates: demo account required, dry-run env must remain true, max lot must be 0.05 or lower."
 
 if ($StartNow) {
     Start-ScheduledTask -TaskName $TaskName

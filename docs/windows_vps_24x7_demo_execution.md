@@ -6,7 +6,7 @@ It still uses safety gates:
 
 - `APEX_MT5_REQUIRE_DEMO=true` is required.
 - `APEX_MT5_DRY_RUN=true` must remain set in `.env`; the runner only unlocks order sending through explicit command-line confirmation flags.
-- `APEX_MAX_LOT` must be `0.01` or lower.
+- `APEX_MAX_LOT` defaults to `0.03` and must be `0.05` or lower.
 - Telegram must be enabled so trade activity is reported.
 - The MT5 gateway and runner refuse a new Gold entry when a Gold position is already open.
 - The managed trailing logic is enabled with its explicit confirmation flag.

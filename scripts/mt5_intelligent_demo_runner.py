@@ -35,7 +35,7 @@ from src.strategy.state_manager import CentralRuntimeStateManager
 
 EXECUTION_CONFIRMATION = "ENABLE_ONE_INTELLIGENT_DEMO_TRADE"
 MANAGEMENT_CONFIRMATION = "ENABLE_BUFFERED_DEMO_TRAILING"
-MAXIMUM_VOLUME = 0.01
+MAXIMUM_VOLUME = 0.05
 MAXIMUM_ENTRY_SPREAD_PRICE = 0.35
 MAXIMUM_LIVE_QUOTE_INACTIVITY_SECONDS = 5.0
 MANAGED_PLAN_PATH = ROOT / ".apex_runtime" / "managed_gold_trade.json"
@@ -176,7 +176,7 @@ async def run_strategy(
     if not configured.require_demo:
         raise RuntimeError("Refusing strategy run because APEX_MT5_REQUIRE_DEMO is not true.")
     if configured.max_lot <= 0 or configured.max_lot > MAXIMUM_VOLUME:
-        raise RuntimeError("Refusing strategy run because APEX_MAX_LOT must be 0.01 or lower.")
+        raise RuntimeError("Refusing strategy run because APEX_MAX_LOT must be 0.05 or lower.")
 
     volume_cap = min(configured.max_lot, MAXIMUM_VOLUME)
     gateway_config = (

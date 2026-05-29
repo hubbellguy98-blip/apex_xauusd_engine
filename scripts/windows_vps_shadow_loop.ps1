@@ -47,8 +47,8 @@ function Assert-SafeShadowConfiguration {
     if ($EnvValues["APEX_MT5_REQUIRE_DEMO"] -ne "true") {
         throw "24/7 shadow loop requires APEX_MT5_REQUIRE_DEMO=true."
     }
-    if ([double]$EnvValues["APEX_MAX_LOT"] -gt 0.01) {
-        throw "24/7 shadow loop requires APEX_MAX_LOT=0.01 or lower."
+    if ([double]$EnvValues["APEX_MAX_LOT"] -gt 0.05) {
+        throw "24/7 shadow loop requires APEX_MAX_LOT=0.05 or lower."
     }
 }
 

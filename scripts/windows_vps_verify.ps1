@@ -35,8 +35,8 @@ if ($EnvValues["APEX_MT5_REQUIRE_DEMO"] -ne "true") {
     throw "Keep APEX_MT5_REQUIRE_DEMO=true during first VPS verification."
 }
 
-if ([double]$EnvValues["APEX_MAX_LOT"] -gt 0.01) {
-    throw "Keep APEX_MAX_LOT=0.01 or lower during first VPS verification."
+if ([double]$EnvValues["APEX_MAX_LOT"] -gt 0.05) {
+    throw "Keep APEX_MAX_LOT=0.05 or lower during VPS verification."
 }
 
 if ($EnvValues.ContainsKey("MT5_PATH") -and $EnvValues["MT5_PATH"] -and -not (Test-Path $EnvValues["MT5_PATH"])) {

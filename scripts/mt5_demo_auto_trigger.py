@@ -20,7 +20,7 @@ from src.infrastructure.broker.mt5_config import load_mt5_config
 from src.infrastructure.broker.mt5_gateway import MT5BrokerGateway
 
 CONFIRMATION_TEXT = "ENABLE_ONE_DEMO_AUTO_TRADE"
-MAXIMUM_VOLUME = 0.01
+MAXIMUM_VOLUME = 0.05
 
 
 async def run_auto_trigger(timeout_seconds: float, trigger_distance: float, poll_seconds: float) -> int:
@@ -30,7 +30,7 @@ async def run_auto_trigger(timeout_seconds: float, trigger_distance: float, poll
     if not configured.require_demo:
         raise RuntimeError("Refusing automatic trade because APEX_MT5_REQUIRE_DEMO is not true.")
     if configured.max_lot > MAXIMUM_VOLUME:
-        raise RuntimeError("Refusing automatic trade because APEX_MAX_LOT must be 0.01 or lower.")
+        raise RuntimeError("Refusing automatic trade because APEX_MAX_LOT must be 0.05 or lower.")
 
     single_trade_config = replace(configured, dry_run=False, max_lot=min(configured.max_lot, MAXIMUM_VOLUME))
     gateway = MT5BrokerGateway(single_trade_config)

@@ -84,7 +84,7 @@ MT5_PATH=C:\Program Files\MetaTrader 5\terminal64.exe
 APEX_SYMBOL=XAUUSD
 APEX_MT5_DRY_RUN=true
 APEX_MT5_REQUIRE_DEMO=true
-APEX_MAX_LOT=0.01
+APEX_MAX_LOT=0.03
 APEX_MT5_DEVIATION_POINTS=20
 ```
 
@@ -122,7 +122,7 @@ Stop and fix the VPS setup if any of these appear:
 - No tick available.
 - No recent tick activity.
 - Wrong symbol, such as a stock named BarrickGold instead of spot Gold/XAUUSD.
-- `APEX_MAX_LOT` greater than `0.01`.
+- `APEX_MAX_LOT` greater than `0.05`.
 
 ## 8. Later Continuous Demo Mode
 
