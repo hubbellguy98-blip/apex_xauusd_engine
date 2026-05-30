@@ -33,6 +33,11 @@ APEX_TELEGRAM_CHAT_ID=replace_with_telegram_chat_id
 APEX_TELEGRAM_PARSE_MODE=HTML
 APEX_TELEGRAM_MIN_SEVERITY=INFO
 APEX_TELEGRAM_TIMEOUT_SECONDS=10
+APEX_TELEGRAM_NOTIFY_RUN_STARTED=false
+APEX_TELEGRAM_NOTIFY_SESSION_SUMMARY=false
+APEX_TELEGRAM_NOTIFY_QUALIFIED_SIGNAL=false
+APEX_TELEGRAM_NOTIFY_ORDER_RESULT=true
+APEX_TELEGRAM_NOTIFY_ORDER_REJECTION=false
 APEX_REPORTING_EVENT_LOG=.apex_runtime/notifications/telegram_events.jsonl
 APEX_DAILY_REPORT_ENABLED=false
 APEX_DAILY_REPORT_LOOKBACK_HOURS=24
@@ -40,6 +45,19 @@ APEX_DAILY_REPORT_TIMEZONE=Asia/Kolkata
 ```
 
 Do not commit your real Telegram token or MT5 password.
+
+## Notification Policy
+
+The engine records every event to the local JSONL evidence log, but Telegram should stay quiet during normal 24/7 operation. The default policy is:
+
+- No `Run Started` messages.
+- No per-cycle `Apex Session Summary` messages.
+- No qualified-signal pings unless explicitly enabled.
+- Telegram alerts for filled demo orders.
+- Rejected/unfilled order results stay in the evidence log and daily report unless `APEX_TELEGRAM_NOTIFY_ORDER_REJECTION=true`.
+- Runtime errors still alert because they can stop observation or execution.
+
+This keeps the phone useful for important events while the daily report remains the main full-data review surface.
 
 ## Smoke Test
 

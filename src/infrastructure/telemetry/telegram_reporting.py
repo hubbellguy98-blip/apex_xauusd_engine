@@ -29,6 +29,11 @@ class TelegramReportingConfig:
     daily_report_enabled: bool
     daily_report_lookback_hours: int
     daily_report_timezone: str
+    notify_run_started: bool
+    notify_session_summary: bool
+    notify_qualified_signal: bool
+    notify_order_result: bool
+    notify_order_rejection: bool
 
     @classmethod
     def from_env_file(cls, env_path: Path, repo_root: Path) -> "TelegramReportingConfig":
@@ -55,6 +60,11 @@ class TelegramReportingConfig:
             daily_report_enabled=_as_bool(values.get("APEX_DAILY_REPORT_ENABLED"), default=False),
             daily_report_lookback_hours=int(values.get("APEX_DAILY_REPORT_LOOKBACK_HOURS", "24")),
             daily_report_timezone=values.get("APEX_DAILY_REPORT_TIMEZONE", "Asia/Kolkata"),
+            notify_run_started=_as_bool(values.get("APEX_TELEGRAM_NOTIFY_RUN_STARTED"), default=False),
+            notify_session_summary=_as_bool(values.get("APEX_TELEGRAM_NOTIFY_SESSION_SUMMARY"), default=False),
+            notify_qualified_signal=_as_bool(values.get("APEX_TELEGRAM_NOTIFY_QUALIFIED_SIGNAL"), default=False),
+            notify_order_result=_as_bool(values.get("APEX_TELEGRAM_NOTIFY_ORDER_RESULT"), default=True),
+            notify_order_rejection=_as_bool(values.get("APEX_TELEGRAM_NOTIFY_ORDER_REJECTION"), default=False),
         )
 
 
@@ -110,6 +120,11 @@ class TelegramReportingService:
                 daily_report_enabled=False,
                 daily_report_lookback_hours=24,
                 daily_report_timezone="Asia/Kolkata",
+                notify_run_started=False,
+                notify_session_summary=False,
+                notify_qualified_signal=False,
+                notify_order_result=True,
+                notify_order_rejection=False,
             )
         )
 
@@ -133,14 +148,30 @@ class TelegramReportingService:
         **payload: Any,
     ) -> RuntimeEvent:
         event = self.record(event_type, severity, **payload)
-        if notify:
+        if notify and self.should_notify_event(event_type, severity, payload):
             await self.notify(event_type.replace("_", " ").title(), payload, severity)
         return event
 
     async def send_session_summary(self, summary: dict[str, Any]) -> None:
-        if not self.config.enabled:
+        if not self.config.enabled or not self.config.notify_session_summary:
             return
         await self.notify("Apex Session Summary", summary, "INFO")
+
+    def should_notify_event(self, event_type: str, severity: str, payload: dict[str, Any]) -> bool:
+        """Apply the operator-facing Telegram policy while still recording every event locally."""
+        severity_upper = severity.upper()
+        if severity_upper in {"ERROR", "CRITICAL"}:
+            return True
+        if event_type == "RUN_STARTED":
+            return self.config.notify_run_started
+        if event_type == "RISK_APPROVED":
+            return self.config.notify_qualified_signal
+        if event_type == "ORDER_RESULT":
+            status = str(payload.get("order_status", "")).upper()
+            if status == "FILLED":
+                return self.config.notify_order_result
+            return self.config.notify_order_rejection
+        return False
 
     async def send_daily_report(self, lookback_hours: int | None = None) -> str:
         lookback = lookback_hours or self.config.daily_report_lookback_hours

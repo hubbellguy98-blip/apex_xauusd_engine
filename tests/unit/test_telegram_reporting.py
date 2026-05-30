@@ -21,6 +21,11 @@ def test_telegram_config_is_disabled_by_default(tmp_path) -> None:
     assert config.bot_token is None
     assert config.chat_id is None
     assert config.event_log_path == tmp_path / ".apex_runtime" / "notifications" / "telegram_events.jsonl"
+    assert config.notify_run_started is False
+    assert config.notify_session_summary is False
+    assert config.notify_qualified_signal is False
+    assert config.notify_order_result is True
+    assert config.notify_order_rejection is False
 
 
 def test_telegram_config_requires_token_and_chat_when_enabled(tmp_path) -> None:
@@ -45,6 +50,40 @@ def test_runtime_event_log_appends_and_reads_recent_events(tmp_path) -> None:
     assert [event.event_type for event in events] == ["RUN_STARTED", "RUN_SUMMARY"]
     assert events[0].payload["password"] == "***"
     assert events[1].payload["live_quotes_processed"] == 10
+
+
+def test_notification_policy_is_quiet_except_filled_orders_and_errors(tmp_path) -> None:
+    from src.infrastructure.telemetry.telegram_reporting import TelegramReportingService
+
+    service = TelegramReportingService.disabled(tmp_path)
+
+    assert not service.should_notify_event("RUN_STARTED", "INFO", {})
+    assert not service.should_notify_event("RISK_APPROVED", "INFO", {})
+    assert not service.should_notify_event("ORDER_RESULT", "WARNING", {"order_status": "REJECTED"})
+    assert service.should_notify_event("ORDER_RESULT", "INFO", {"order_status": "FILLED"})
+    assert service.should_notify_event("MT5_CONNECTION_FAILED", "ERROR", {})
+
+
+def test_notification_policy_can_opt_into_noisy_operator_messages(tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "APEX_TELEGRAM_NOTIFY_RUN_STARTED=true",
+                "APEX_TELEGRAM_NOTIFY_SESSION_SUMMARY=true",
+                "APEX_TELEGRAM_NOTIFY_QUALIFIED_SIGNAL=true",
+                "APEX_TELEGRAM_NOTIFY_ORDER_REJECTION=true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = TelegramReportingConfig.from_env_file(env_file, tmp_path)
+
+    assert config.notify_run_started is True
+    assert config.notify_session_summary is True
+    assert config.notify_qualified_signal is True
+    assert config.notify_order_rejection is True
 
 
 def test_daily_report_summarizes_key_runtime_metrics() -> None:
