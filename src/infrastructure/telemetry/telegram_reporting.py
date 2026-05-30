@@ -200,9 +200,13 @@ class DailyReportBuilder:
     def build_text_report(self) -> str:
         summary_events = [event for event in self.events if event.event_type == "RUN_SUMMARY"]
         latest_summary = summary_events[-1].payload if summary_events else {}
+        cycle_totals = _aggregate_summary_events(summary_events)
         event_counts = Counter(event.event_type for event in self.events)
         severity_counts = Counter(event.severity for event in self.events)
         session_metrics = _summarize_by_session(summary_events)
+        order_status_counts = Counter(
+            str(event.payload.get("order_status", "UNKNOWN")) for event in self.events if event.event_type == "ORDER_RESULT"
+        )
         rejection_counts = Counter(
             str(event.payload.get("rejection_reason") or event.payload.get("latest_confirmation_rejection"))
             for event in self.events
@@ -213,7 +217,15 @@ class DailyReportBuilder:
             for event in self.events
             for reason in _as_list(event.payload.get("rejection_reasons") or event.payload.get("reasons"))
         )
-        recommendations = self._recommendations(latest_summary, severity_counts, rejection_counts, blocked_counts)
+        recommendations = self._recommendations(
+            latest_summary,
+            cycle_totals,
+            event_counts,
+            severity_counts,
+            rejection_counts,
+            blocked_counts,
+            order_status_counts,
+        )
         lines = [
             "<b>Apex XAUUSD Daily Intelligence Report</b>",
             f"Window: last {self.lookback_hours} hours",
@@ -225,20 +237,27 @@ class DailyReportBuilder:
             f"Dry run: {latest_summary.get('dry_run', 'unknown')}",
             f"Max lot: {latest_summary.get('max_lot', 'unknown')}",
             "",
-            "<b>Market Data Health</b>",
+            "<b>24h Market Data Health</b>",
+            f"Live quotes processed: {cycle_totals['live_quotes_processed']}",
+            f"Closed candles ingested: {cycle_totals['live_closed_candles_ingested']}",
+            f"Quote updates confirming live feed: {cycle_totals['quote_updates_confirming_live_feed']}",
+            f"Inactive quote reads discarded: {cycle_totals['inactive_quote_reads_discarded']}",
+            f"Temporary tick gaps: {cycle_totals['temporary_tick_gaps']}",
+            "",
+            "<b>Latest Run Snapshot</b>",
             f"Live quotes processed: {latest_summary.get('live_quotes_processed', 0)}",
             f"Closed candles ingested: {latest_summary.get('live_closed_candles_ingested', 0)}",
             f"Quote updates confirming live feed: {latest_summary.get('quote_updates_confirming_live_feed', 0)}",
             f"Inactive quote reads discarded: {latest_summary.get('inactive_quote_reads_discarded', 0)}",
             f"Temporary tick gaps: {latest_summary.get('temporary_tick_gaps', 0)}",
             "",
-            "<b>Strategy Detection</b>",
-            f"Qualified candidates: {latest_summary.get('qualified_candidates', 0)}",
-            f"Live sweeps detected: {latest_summary.get('live_sweeps_detected', 0)}",
-            f"Reversal candidates detected: {latest_summary.get('reversal_candidates_detected', 0)}",
-            f"Confirmation blocks: {latest_summary.get('confirmation_blocks', 0)}",
-            f"Quality blocks: {latest_summary.get('quality_blocks', 0)}",
-            f"Cooldown blocks: {latest_summary.get('cooldown_blocks', 0)}",
+            "<b>24h Strategy Detection</b>",
+            f"Qualified candidates: {max(cycle_totals['qualified_candidates'], event_counts['RISK_APPROVED'])}",
+            f"Live sweeps detected: {cycle_totals['live_sweeps_detected']}",
+            f"Reversal candidates detected: {cycle_totals['reversal_candidates_detected']}",
+            f"Confirmation blocks: {cycle_totals['confirmation_blocks']}",
+            f"Quality blocks: {cycle_totals['quality_blocks']}",
+            f"Cooldown blocks: {cycle_totals['cooldown_blocks']}",
             f"Latest confirmation rejection: {html_escape(str(latest_summary.get('latest_confirmation_rejection', 'none')))}",
             "",
             "<b>Risk And Execution</b>",
@@ -246,7 +265,11 @@ class DailyReportBuilder:
             f"Risk/scoring blocked events: {event_counts['CANDIDATE_BLOCKED']}",
             f"Pre-submission checks: {event_counts['PRE_SUBMISSION_CHECK']}",
             f"Orders submitted/finalized: {event_counts['ORDER_RESULT']}",
-            f"Stop updates applied: {latest_summary.get('stop_updates_applied', 0)}",
+            f"Order fills: {order_status_counts['FILLED']}",
+            f"Order rejections: {order_status_counts['REJECTED']}",
+            f"Adaptive lot reductions: {event_counts['ADAPTIVE_LOT_REDUCTION']}",
+            f"Demo minimum-lot overrides: {event_counts['DEMO_MIN_LOT_OBSERVATION_OVERRIDE']}",
+            f"Stop updates applied: {cycle_totals['stop_updates_applied']}",
             "",
             "<b>Runtime Events</b>",
             f"Total events recorded: {len(self.events)}",
@@ -278,24 +301,31 @@ class DailyReportBuilder:
     def _recommendations(
         self,
         latest_summary: dict[str, Any],
+        cycle_totals: dict[str, int],
+        event_counts: Counter[str],
         severity_counts: Counter[str],
         rejection_counts: Counter[str],
         blocked_counts: Counter[str],
+        order_status_counts: Counter[str],
     ) -> list[str]:
         recommendations: list[str] = []
         if not latest_summary:
             recommendations.append("No completed run summary was found. Run the strategy long enough to finish cleanly.")
             return recommendations
-        if int(latest_summary.get("live_quotes_processed", 0) or 0) == 0:
-            recommendations.append("Live quote flow is weak or missing. Verify MT5 is open, logged in, and the symbol is active.")
+        if cycle_totals["live_quotes_processed"] == 0:
+            recommendations.append("Live quote flow is weak or missing across the full day. Verify MT5 is open, logged in, and the symbol is active.")
+        elif int(latest_summary.get("live_quotes_processed", 0) or 0) == 0:
+            recommendations.append("The latest run had no fresh quotes, but the full day had live data. Check whether this happened during a quiet/closed market window.")
         if severity_counts["ERROR"] or severity_counts["CRITICAL"]:
             recommendations.append("Runtime errors occurred. Inspect the JSONL event log before enabling any execution mode.")
-        if "SETUP_OUTSIDE_KILLZONE_BOUNDARIES" in rejection_counts:
+        if any("SETUP_OUTSIDE_KILLZONE_BOUNDARIES" in reason for reason in rejection_counts):
             recommendations.append("Signals appeared outside the configured killzone. Gather more samples during the target sessions.")
         if blocked_counts:
             recommendations.append("Review repeated block reasons before loosening filters; repeated blocks are useful edge-validation evidence.")
-        if int(latest_summary.get("qualified_candidates", 0) or 0) == 0:
-            recommendations.append("No qualified candidate completed the full pipeline. Keep collecting shadow data before judging accuracy.")
+        if max(cycle_totals["qualified_candidates"], event_counts["RISK_APPROVED"]) == 0:
+            recommendations.append("No qualified candidate completed the full pipeline. Keep collecting shadow/live-demo data before judging accuracy.")
+        if event_counts["ORDER_RESULT"] and order_status_counts["FILLED"] == 0:
+            recommendations.append("The engine reached order submission but filled no orders. Inspect final broker risk, spread, and order-check rejection reasons.")
         if not recommendations:
             recommendations.append("No critical fix is obvious from this window. Continue shadow/live-demo sampling and compare reports.")
         return recommendations
@@ -383,6 +413,28 @@ def _summarize_by_session(summary_events: list[RuntimeEvent]) -> dict[str, dict[
         bucket["blocks"] += int(payload.get("quality_blocks", 0) or 0)
         bucket["blocks"] += int(payload.get("cooldown_blocks", 0) or 0)
     return metrics
+
+
+def _aggregate_summary_events(summary_events: list[RuntimeEvent]) -> dict[str, int]:
+    keys = (
+        "live_quotes_processed",
+        "live_closed_candles_ingested",
+        "quote_updates_confirming_live_feed",
+        "inactive_quote_reads_discarded",
+        "temporary_tick_gaps",
+        "stop_updates_applied",
+        "qualified_candidates",
+        "live_sweeps_detected",
+        "reversal_candidates_detected",
+        "confirmation_blocks",
+        "quality_blocks",
+        "cooldown_blocks",
+    )
+    totals = {key: 0 for key in keys}
+    for event in summary_events:
+        for key in keys:
+            totals[key] += int(event.payload.get(key, 0) or 0)
+    return totals
 
 
 def _session_bucket(timestamp_utc: datetime) -> str:

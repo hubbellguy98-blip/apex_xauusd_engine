@@ -498,11 +498,41 @@ async def run_strategy(
                     maximum_currency_risk=risk_snapshot.sizing.currency_risk,
                     maximum_spread_price=MAXIMUM_ENTRY_SPREAD_PRICE,
                     observed_quote_age_seconds=activity_snapshot.quote_age_seconds,
+                    adaptive_lot_sizing=True,
+                    demo_observation_minimum_lot=execute_one_demo_trade,
                 )
                 print(f"pre_submission_approved={pre_submission.is_approved}")
+                print(f"pre_submission_requested_lots={pre_submission.requested_lots:.2f}")
+                print(f"pre_submission_normalized_lots={pre_submission.normalized_lots:.2f}")
                 print(f"pre_submission_live_entry={pre_submission.live_entry_price:.2f}")
                 print(f"pre_submission_currency_risk={pre_submission.currency_risk:.2f}")
                 print(f"pre_submission_quote_age_seconds={pre_submission.quote_age_seconds:.3f}")
+                if pre_submission.adapted_to_fit_risk:
+                    print("pre_submission_adaptive_lot_sizing=APPLIED")
+                    reporting.record(
+                        "ADAPTIVE_LOT_REDUCTION",
+                        "INFO",
+                        mode=mode,
+                        symbol=symbol,
+                        setup_id=setup.id,
+                        requested_lots=pre_submission.requested_lots,
+                        adjusted_lots=pre_submission.normalized_lots,
+                        live_currency_risk=pre_submission.currency_risk,
+                        approved_currency_risk=risk_snapshot.sizing.currency_risk,
+                    )
+                if pre_submission.demo_minimum_lot_override:
+                    print("pre_submission_demo_observation_override=MINIMUM_LOT")
+                    reporting.record(
+                        "DEMO_MIN_LOT_OBSERVATION_OVERRIDE",
+                        "WARNING",
+                        mode=mode,
+                        symbol=symbol,
+                        setup_id=setup.id,
+                        requested_lots=pre_submission.requested_lots,
+                        adjusted_lots=pre_submission.normalized_lots,
+                        live_currency_risk=pre_submission.currency_risk,
+                        approved_currency_risk=risk_snapshot.sizing.currency_risk,
+                    )
                 if pre_submission.rejection_reasons:
                     print(f"pre_submission_rejection={','.join(pre_submission.rejection_reasons)}")
                 print(f"status={report.status.value}")
@@ -516,6 +546,10 @@ async def run_strategy(
                     symbol=symbol,
                     setup_id=setup.id,
                     pre_submission_approved=pre_submission.is_approved,
+                    requested_lots=pre_submission.requested_lots,
+                    normalized_lots=pre_submission.normalized_lots,
+                    adapted_to_fit_risk=pre_submission.adapted_to_fit_risk,
+                    demo_minimum_lot_override=pre_submission.demo_minimum_lot_override,
                     live_entry_price=pre_submission.live_entry_price,
                     currency_risk=pre_submission.currency_risk,
                     quote_age_seconds=pre_submission.quote_age_seconds,

@@ -120,10 +120,13 @@ class MT5BrokerGateway(BrokerGatewayABC):
         maximum_spread_price: float,
         maximum_quote_age_seconds: float = 5.0,
         observed_quote_age_seconds: float | None = None,
+        adaptive_lot_sizing: bool = False,
+        demo_observation_minimum_lot: bool = False,
     ) -> tuple[ExecutionReport, PreSubmissionRiskAssessment]:
         """Submit only if a recently active quote stream still respects approved risk."""
         self._require_connected()
-        volume = self.normalize_order_volume(float(request.quantity_lots))
+        requested_volume = self.normalize_order_volume(float(request.quantity_lots))
+        volume = requested_volume
         try:
             tick = self.read_current_tick()
         except RuntimeError as exc:
@@ -138,21 +141,36 @@ class MT5BrokerGateway(BrokerGatewayABC):
                 spread_price=0.0,
                 quote_age_seconds=float("inf"),
                 rejection_reasons=["BROKER_EXECUTABLE_QUOTE_UNAVAILABLE"],
+                requested_lots=requested_volume,
             )
             return self._reject(request, "PRE_SUBMISSION_REVALIDATION_FAILED: BROKER_EXECUTABLE_QUOTE_UNAVAILABLE"), assessment
         live_entry_price = tick.ask if request.direction == OrderDirection.BUY else tick.bid
+        adapted_to_fit_risk = False
+        demo_minimum_lot_override = False
         try:
-            currency_risk = (
-                self.calculate_stop_loss_currency_per_lot(request.direction, live_entry_price, request.stop_loss)
-                * volume
-                if volume > 0.0
-                else 0.0
+            currency_loss_per_lot = self.calculate_stop_loss_currency_per_lot(
+                request.direction,
+                live_entry_price,
+                request.stop_loss,
             )
         except (RuntimeError, ValueError):
-            currency_risk = 0.0
+            currency_loss_per_lot = 0.0
+        if adaptive_lot_sizing and currency_loss_per_lot > 0.0 and maximum_currency_risk > 0.0 and volume > 0.0:
+            safe_lots = maximum_currency_risk / currency_loss_per_lot
+            adapted_volume = self.normalize_order_volume(min(volume, safe_lots))
+            if 0.0 < adapted_volume < volume:
+                volume = adapted_volume
+                adapted_to_fit_risk = True
+            elif adapted_volume <= 0.0 and demo_observation_minimum_lot and self._config.require_demo:
+                minimum_volume = self.normalize_order_volume(self.read_sizing_specification().volume_min)
+                if minimum_volume > 0.0:
+                    volume = minimum_volume
+                    demo_minimum_lot_override = True
+        currency_risk = currency_loss_per_lot * volume if currency_loss_per_lot > 0.0 and volume > 0.0 else 0.0
         assessment = PreSubmissionRiskGuard(
             maximum_spread_price=maximum_spread_price,
             maximum_quote_age_seconds=maximum_quote_age_seconds,
+            currency_risk_tolerance=(maximum_currency_risk if demo_minimum_lot_override else 0.01),
         ).evaluate(
             direction=request.direction,
             live_entry_price=live_entry_price,
@@ -165,6 +183,12 @@ class MT5BrokerGateway(BrokerGatewayABC):
             observed_quote_age_seconds=(
                 float("inf") if observed_quote_age_seconds is None else observed_quote_age_seconds
             ),
+        )
+        assessment = replace(
+            assessment,
+            requested_lots=requested_volume,
+            adapted_to_fit_risk=adapted_to_fit_risk,
+            demo_minimum_lot_override=demo_minimum_lot_override,
         )
         if not assessment.is_approved:
             reason = "PRE_SUBMISSION_REVALIDATION_FAILED: " + ",".join(assessment.rejection_reasons)

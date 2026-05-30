@@ -97,9 +97,51 @@ def test_daily_report_summarizes_key_runtime_metrics() -> None:
 
     assert "Apex XAUUSD Daily Intelligence Report" in report
     assert "GOLD.i#" in report
+    assert "24h Market Data Health" in report
     assert "Live quotes processed: 25" in report
     assert "LOW_SCORE: 1" in report
     assert "Session Breakdown" in report
+
+
+def test_daily_report_uses_full_day_totals_not_only_latest_run() -> None:
+    now = datetime.now(timezone.utc)
+    events = [
+        _event(
+            now - timedelta(hours=2),
+            "RUN_SUMMARY",
+            "INFO",
+            symbol="GOLD.i#",
+            mode="ONE_DEMO_EXECUTION_AND_MANAGEMENT",
+            status="NO_QUALIFIED_SIGNAL_BEFORE_TIMEOUT",
+            live_quotes_processed=100,
+            qualified_candidates=3,
+            live_sweeps_detected=5,
+        ),
+        _event(
+            now,
+            "RUN_SUMMARY",
+            "WARNING",
+            symbol="GOLD.i#",
+            mode="ONE_DEMO_EXECUTION_AND_MANAGEMENT",
+            status="SHADOW_TEST_INVALID_NO_RECENT_TICK_ACTIVITY",
+            live_quotes_processed=0,
+            inactive_quote_reads_discarded=30,
+            qualified_candidates=0,
+        ),
+        _event(now, "RISK_APPROVED", "INFO"),
+        _event(now, "ORDER_RESULT", "WARNING", order_status="REJECTED"),
+    ]
+
+    report = DailyReportBuilder(events, lookback_hours=24).build_text_report()
+
+    assert "Status: SHADOW_TEST_INVALID_NO_RECENT_TICK_ACTIVITY" in report
+    assert "24h Market Data Health" in report
+    assert "Live quotes processed: 100" in report
+    assert "Qualified candidates: 3" in report
+    assert "Order fills: 0" in report
+    assert "Order rejections: 1" in report
+    assert "The latest run had no fresh quotes, but the full day had live data" in report
+    assert "No qualified candidate completed the full pipeline" not in report
 
 
 def test_daily_report_groups_run_summaries_by_session() -> None:

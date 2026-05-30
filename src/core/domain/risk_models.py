@@ -54,6 +54,9 @@ class PreSubmissionRiskAssessment:
     spread_price: float
     quote_age_seconds: float
     rejection_reasons: List[str] = field(default_factory=list)
+    requested_lots: float = 0.0
+    adapted_to_fit_risk: bool = False
+    demo_minimum_lot_override: bool = False
 
 
 @dataclass(frozen=True, slots=True)
