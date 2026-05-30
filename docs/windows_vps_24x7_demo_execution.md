@@ -15,6 +15,8 @@ It still uses safety gates:
 
 Demo execution mode does not force an instant trade. It allows a trade only when the strategy detects a qualified setup, passes scoring, passes risk, passes live quote checks, and passes MT5 pre-submission validation.
 
+Weekend rest is enabled by default. On Saturday and Sunday UTC, the supervisor stays alive but sleeps instead of starting demo execution cycles. This avoids useless MT5 polling and accidental weekend broker behavior while the forex/CFD market is closed. If you intentionally need weekend testing, reinstall the task with `-DisableWeekendRest`.
+
 ## Switch From Shadow To Demo Execution
 
 Run PowerShell as Administrator on the VPS:
@@ -37,6 +39,12 @@ Check newest demo logs:
 ```powershell
 Get-ChildItem .apex_runtime\logs\demo_runner_*.log | Sort-Object LastWriteTime -Descending | Select-Object -First 5
 Get-Content (Get-ChildItem .apex_runtime\logs\demo_runner_*.log | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName -Tail 120
+```
+
+During Saturday/Sunday UTC rest, the newest supervisor log will show:
+
+```text
+Weekend market-rest window is active. No demo runner cycle will be started.
 ```
 
 ## Stop Demo Execution

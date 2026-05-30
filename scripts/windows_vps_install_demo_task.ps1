@@ -8,6 +8,8 @@ param(
     [int]$DailyReportHourUtc = 22,
     [int]$DailyReportMinuteUtc = 5,
     [int]$DailyReportLookbackHours = 24,
+    [int]$WeekendRestSleepSeconds = 1800,
+    [switch]$DisableWeekendRest,
     [switch]$DailyReportOnStart,
     [switch]$StartNow
 )
@@ -37,11 +39,15 @@ $Argument = @(
     "-RestSeconds", $RestSeconds,
     "-DailyReportHourUtc", $DailyReportHourUtc,
     "-DailyReportMinuteUtc", $DailyReportMinuteUtc,
-    "-DailyReportLookbackHours", $DailyReportLookbackHours
+    "-DailyReportLookbackHours", $DailyReportLookbackHours,
+    "-WeekendRestSleepSeconds", $WeekendRestSleepSeconds
 ) -join " "
 
 if ($DailyReportOnStart) {
     $Argument = "$Argument -DailyReportOnStart"
+}
+if ($DisableWeekendRest) {
+    $Argument = "$Argument -DisableWeekendRest"
 }
 
 $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $Argument -WorkingDirectory $ProjectRoot
@@ -67,6 +73,11 @@ Register-ScheduledTask `
 Write-Host "Installed scheduled task: $TaskName"
 Write-Host "Mode: ACTUAL DEMO EXECUTION with protected management."
 Write-Host "Daily report time: $($DailyReportHourUtc.ToString('00')):$($DailyReportMinuteUtc.ToString('00')) UTC"
+if ($DisableWeekendRest) {
+    Write-Host "Weekend rest: DISABLED by operator flag."
+} else {
+    Write-Host "Weekend rest: enabled on Saturday/Sunday UTC. The loop sleeps instead of trading."
+}
 Write-Host "Safety gates: demo account required, dry-run env must remain true, max lot must be 0.05 or lower."
 
 if ($StartNow) {

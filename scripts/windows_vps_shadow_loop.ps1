@@ -6,6 +6,8 @@ param(
     [int]$DailyReportHourUtc = 22,
     [int]$DailyReportMinuteUtc = 5,
     [int]$DailyReportLookbackHours = 24,
+    [switch]$DisableWeekendRest,
+    [int]$WeekendRestSleepSeconds = 1800,
     [switch]$DailyReportOnStart
 )
 
@@ -74,6 +76,11 @@ function Get-NextDailyReportDueUtc {
     return $Candidate
 }
 
+function Test-MarketRestDayUtc {
+    param([DateTime]$ReferenceUtc)
+    return $ReferenceUtc.DayOfWeek -in @([DayOfWeek]::Saturday, [DayOfWeek]::Sunday)
+}
+
 Assert-SafeShadowConfiguration
 
 $NextDailyReportAtUtc = Get-NextDailyReportDueUtc `
@@ -86,6 +93,11 @@ Write-LoopLog "Project: $ProjectRoot"
 Write-LoopLog "SessionSeconds=$SessionSeconds PollSeconds=$PollSeconds WarmupBars=$WarmupBars RestSeconds=$RestSeconds"
 Write-LoopLog "Daily report due UTC: $($NextDailyReportAtUtc.ToString('yyyy-MM-dd HH:mm:ss'))"
 Write-LoopLog "Order submission is NOT enabled by this supervisor."
+if ($DisableWeekendRest) {
+    Write-LoopLog "Weekend rest is DISABLED by operator flag."
+} else {
+    Write-LoopLog "Weekend rest is enabled. Saturday/Sunday UTC cycles will sleep instead of running shadow scans."
+}
 
 if ($DailyReportOnStart) {
     $ReportLog = Join-Path $LogRoot "telegram_daily_report_$((Get-Date).ToString('yyyyMMdd_HHmmss')).log"
@@ -94,6 +106,12 @@ if ($DailyReportOnStart) {
 }
 
 while ($true) {
+    if (-not $DisableWeekendRest -and (Test-MarketRestDayUtc -ReferenceUtc ([DateTime]::UtcNow))) {
+        Write-LoopLog "Weekend market-rest window is active. No shadow runner cycle will be started."
+        Start-Sleep -Seconds $WeekendRestSleepSeconds
+        continue
+    }
+
     $StartedAt = Get-Date
     $RunStamp = $StartedAt.ToString("yyyyMMdd_HHmmss")
     $RunLog = Join-Path $LogRoot "shadow_runner_$RunStamp.log"

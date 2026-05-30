@@ -36,16 +36,25 @@ Default behavior:
 - Runs a 15-minute shadow session.
 - Waits 5 seconds.
 - Starts the next shadow session.
+- Rests on Saturday and Sunday UTC instead of starting new shadow scan cycles.
 - Sends the daily report at `22:05 UTC`, five minutes after the configured Asian session starts.
 - The report looks back 24 hours, so each report covers one Asia-to-next-Asia trading day cycle.
 - Writes logs to `.apex_runtime\logs`.
 
 `22:05 UTC` is `03:35 IST`. This timing is intentional because the strategy's session engine defines Asian accumulation as `22:00-06:00 UTC`.
 
+If you intentionally need weekend testing, reinstall the task with `-DisableWeekendRest`. Keep the default enabled for normal operation.
+
 ## Check Status
 
 ```powershell
 Get-ScheduledTask -TaskName ApexShadowReporter24x7 | Get-ScheduledTaskInfo
+```
+
+During Saturday/Sunday UTC rest, the supervisor log will show:
+
+```text
+Weekend market-rest window is active. No shadow runner cycle will be started.
 ```
 
 ## Stop Temporarily

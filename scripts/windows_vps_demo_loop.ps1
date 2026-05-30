@@ -6,6 +6,8 @@ param(
     [int]$DailyReportHourUtc = 22,
     [int]$DailyReportMinuteUtc = 5,
     [int]$DailyReportLookbackHours = 24,
+    [switch]$DisableWeekendRest,
+    [int]$WeekendRestSleepSeconds = 1800,
     [switch]$DailyReportOnStart
 )
 
@@ -77,6 +79,11 @@ function Get-NextDailyReportDueUtc {
     return $Candidate
 }
 
+function Test-MarketRestDayUtc {
+    param([DateTime]$ReferenceUtc)
+    return $ReferenceUtc.DayOfWeek -in @([DayOfWeek]::Saturday, [DayOfWeek]::Sunday)
+}
+
 Assert-SafeDemoConfiguration
 
 $NextDailyReportAtUtc = Get-NextDailyReportDueUtc `
@@ -90,6 +97,11 @@ Write-LoopLog "SessionSeconds=$SessionSeconds PollSeconds=$PollSeconds WarmupBar
 Write-LoopLog "Daily report due UTC: $($NextDailyReportAtUtc.ToString('yyyy-MM-dd HH:mm:ss'))"
 Write-LoopLog "Actual DEMO order submission is enabled only through explicit runner confirmation flags."
 Write-LoopLog "The strategy still enforces one Gold position at a time and max 0.05 lots."
+if ($DisableWeekendRest) {
+    Write-LoopLog "Weekend rest is DISABLED by operator flag."
+} else {
+    Write-LoopLog "Weekend rest is enabled. Saturday/Sunday UTC cycles will sleep instead of trading."
+}
 
 if ($DailyReportOnStart) {
     $ReportLog = Join-Path $LogRoot "telegram_daily_report_$((Get-Date).ToString('yyyyMMdd_HHmmss')).log"
@@ -98,6 +110,12 @@ if ($DailyReportOnStart) {
 }
 
 while ($true) {
+    if (-not $DisableWeekendRest -and (Test-MarketRestDayUtc -ReferenceUtc ([DateTime]::UtcNow))) {
+        Write-LoopLog "Weekend market-rest window is active. No demo runner cycle will be started."
+        Start-Sleep -Seconds $WeekendRestSleepSeconds
+        continue
+    }
+
     $StartedAt = Get-Date
     $RunStamp = $StartedAt.ToString("yyyyMMdd_HHmmss")
     $RunLog = Join-Path $LogRoot "demo_runner_$RunStamp.log"
