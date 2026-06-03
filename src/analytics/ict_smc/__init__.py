@@ -5,6 +5,17 @@ testable rules. They are intentionally kept separate from the live execution
 path until each concept has been reviewed against real VPS evidence.
 """
 
+from src.analytics.ict_smc.break_of_structure import (
+    BOSBreakType,
+    BOSConfidenceGrade,
+    BOSDetectionConfig,
+    BOSDirection,
+    BOSScope,
+    BOSStatus,
+    BOSEvent,
+    ICTBOSDetector,
+    detect_bos,
+)
 from src.analytics.ict_smc.market_structure import (
     ICTMarketStructureAnalyzer,
     MarketStructureAnalysis,
@@ -28,7 +39,15 @@ from src.analytics.ict_smc.swing_points import (
 )
 
 __all__ = [
+    "BOSBreakType",
+    "BOSConfidenceGrade",
+    "BOSDetectionConfig",
+    "BOSDirection",
+    "BOSEvent",
+    "BOSScope",
+    "BOSStatus",
     "DetectedSwingPoint",
+    "ICTBOSDetector",
     "ICTMarketStructureAnalyzer",
     "ICTSwingPointDetector",
     "MarketStructureAnalysis",
@@ -44,5 +63,6 @@ __all__ = [
     "SwingPointType",
     "SwingStrengthLabel",
     "StructuralSwing",
+    "detect_bos",
     "detect_swings",
 ]
