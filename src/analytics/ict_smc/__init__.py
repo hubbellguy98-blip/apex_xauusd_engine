@@ -16,15 +16,33 @@ from src.analytics.ict_smc.market_structure import (
     SwingLabel,
     StructuralSwing,
 )
+from src.analytics.ict_smc.swing_points import (
+    DetectedSwingPoint,
+    ICTSwingPointDetector,
+    SwingDetectionConfig,
+    SwingLiquidityType,
+    SwingPointStatus,
+    SwingPointType,
+    SwingStrengthLabel,
+    detect_swings,
+)
 
 __all__ = [
+    "DetectedSwingPoint",
     "ICTMarketStructureAnalyzer",
+    "ICTSwingPointDetector",
     "MarketStructureAnalysis",
     "MarketStructureConfig",
     "StructureBreak",
     "StructureBreakKind",
     "StructureTrend",
+    "SwingDetectionConfig",
     "SwingKind",
     "SwingLabel",
+    "SwingLiquidityType",
+    "SwingPointStatus",
+    "SwingPointType",
+    "SwingStrengthLabel",
     "StructuralSwing",
+    "detect_swings",
 ]
