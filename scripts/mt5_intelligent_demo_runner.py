@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections import deque
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,7 @@ from src.execution.position_tracker import (
 from src.execution.position_sizer import InstitutionalPositionSizer
 from src.execution.pre_submission_guard import LiveQuoteActivityMonitor
 from src.execution.risk_firewall import RiskManagementOrchestrator
+from src.execution.stop_loss_engine import DynamicStructuralStopEngine
 from src.infrastructure.broker.mt5_config import load_mt5_config
 from src.infrastructure.broker.mt5_gateway import MT5BrokerGateway
 from src.infrastructure.telemetry.telegram_reporting import TelegramReportingService
@@ -192,6 +194,7 @@ async def run_strategy(
     scoring = TradeScoringOrchestrator(event_bus, state_manager)
     risk = None
     lifecycle = InstitutionalTradeLifecycleManager()
+    stop_hardener = DynamicStructuralStopEngine()
     plan_reconciler = ManagedTradePlanReconciler()
     plan_store = ManagedTradePlanStore(MANAGED_PLAN_PATH)
     managed_plan = plan_store.load()
@@ -255,6 +258,7 @@ async def run_strategy(
         latest_candle_end_by_timeframe = {
             timeframe: candles[-1].end_time for timeframe, candles in histories.items()
         }
+        recent_closed_1m = deque(histories["1m"], maxlen=50)
 
         bias = detector.directional_bias_matrix
         print("MT5 CORE STRATEGY RUNNER")
@@ -391,6 +395,7 @@ async def run_strategy(
                 latest_candle_end_by_timeframe,
             )
             live_closed_candles += ingested_count
+            recent_closed_1m.extend(newly_closed_1m)
             if managed_plan is not None and newly_closed_1m:
                 managed_plan, applied_updates = await manage_protected_position(
                     gateway,
@@ -437,6 +442,44 @@ async def run_strategy(
                         reasons=reasons,
                     )
                     continue
+                hardening = stop_hardener.harden_for_demo_execution(setup, tuple(recent_closed_1m), tick.spread)
+                if hardening.adjusted:
+                    setup = hardening.setup
+                    approved, risk_snapshot = await risk.evaluate_trade_entry_gate(
+                        setup, confirmation_snapshot, ranked.execution_multiplier
+                    )
+                    print("execution_stop_hardening=APPLIED")
+                    print(f"original_stop_distance={hardening.original_stop_distance:.2f}")
+                    print(f"hardened_stop_distance={hardening.hardened_stop_distance:.2f}")
+                    print(f"hardened_rr={hardening.hardened_rr:.2f}")
+                    print(f"hardening_reasons={','.join(hardening.reasons)}")
+                    reporting.record(
+                        "EXECUTION_STOP_HARDENED",
+                        "INFO",
+                        mode=mode,
+                        symbol=symbol,
+                        setup_id=setup.id,
+                        direction=setup.direction.value,
+                        original_stop_distance=hardening.original_stop_distance,
+                        hardened_stop_distance=hardening.hardened_stop_distance,
+                        original_rr=hardening.original_rr,
+                        hardened_rr=hardening.hardened_rr,
+                        stop_loss=setup.stop_loss,
+                        take_profit=setup.take_profit,
+                        reasons=hardening.reasons,
+                    )
+                    if not approved:
+                        print("candidate_status=BLOCKED_BY_RISK_AFTER_STOP_HARDENING")
+                        reporting.record(
+                            "CANDIDATE_BLOCKED",
+                            "WARNING",
+                            mode=mode,
+                            symbol=symbol,
+                            setup_id=setup.id,
+                            direction=setup.direction.value,
+                            reasons=["RISK_REJECTED_AFTER_STOP_HARDENING", *risk_snapshot.rejection_reasons],
+                        )
+                        continue
                 qualified += 1
                 print(f"qualified_direction={setup.direction.value}")
                 print(f"qualified_score={ranked.score_breakdown.normalized_final_score:.2f}")
