@@ -16,6 +16,13 @@ from src.analytics.ict_smc.break_of_structure import (
     ICTBOSDetector,
     detect_bos,
 )
+from src.analytics.ict_smc.bearish_order_block import (
+    BearishOBQualityGrade,
+    BearishOBRetestStatus,
+    BearishOBRetestValidation,
+    detect_bearish_order_block,
+    validate_bearish_ob_retest,
+)
 from src.analytics.ict_smc.bullish_order_block import (
     BullishOBQualityGrade,
     BullishOBRetestStatus,
@@ -158,6 +165,9 @@ __all__ = [
     "BOSEvent",
     "BOSScope",
     "BOSStatus",
+    "BearishOBQualityGrade",
+    "BearishOBRetestStatus",
+    "BearishOBRetestValidation",
     "BullishOBQualityGrade",
     "BullishOBRetestStatus",
     "BullishOBRetestValidation",
@@ -260,6 +270,7 @@ __all__ = [
     "StructuralSwing",
     "TradeDirectionBias",
     "confirm_poi_reaction",
+    "detect_bearish_order_block",
     "detect_bos",
     "detect_bullish_order_block",
     "detect_choch",
@@ -272,5 +283,6 @@ __all__ = [
     "detect_poi_zones",
     "detect_swings",
     "determine_draw_on_liquidity",
+    "validate_bearish_ob_retest",
     "validate_bullish_ob_retest",
 ]
