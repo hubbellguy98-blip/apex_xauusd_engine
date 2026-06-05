@@ -63,6 +63,14 @@ from src.analytics.ict_smc.draw_on_liquidity import (
     TradeDirectionBias,
     determine_draw_on_liquidity,
 )
+from src.analytics.ict_smc.fair_value_gap import (
+    FVGActiveStatus,
+    FVGDisplacementStrength,
+    FVGQualityGrade,
+    FVGType,
+    FairValueGap,
+    detect_fvg,
+)
 from src.analytics.ict_smc.liquidity import (
     ICTLiquidityDetector,
     LiquidityConfluence,
@@ -207,6 +215,11 @@ __all__ = [
     "DrawPOIReference",
     "DrawPriceZone",
     "DrawTargetStatus",
+    "FVGActiveStatus",
+    "FVGDisplacementStrength",
+    "FVGQualityGrade",
+    "FVGType",
+    "FairValueGap",
     "ICTDrawOnLiquidityAnalyzer",
     "ICTBOSDetector",
     "ICTCHoCHDetector",
@@ -299,6 +312,7 @@ __all__ = [
     "detect_choch",
     "detect_equal_highs",
     "detect_equal_lows",
+    "detect_fvg",
     "detect_liquidity_pools",
     "detect_liquidity_sweep",
     "detect_mss",
