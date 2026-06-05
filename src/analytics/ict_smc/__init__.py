@@ -116,6 +116,13 @@ from src.analytics.ict_smc.market_structure_shift import (
     PreviousMovement,
     detect_mss,
 )
+from src.analytics.ict_smc.mitigation_block import (
+    MitigationBlock,
+    MitigationQualityGrade,
+    MitigationRetestStatus,
+    MitigationType,
+    detect_mitigation_blocks,
+)
 from src.analytics.ict_smc.order_block import (
     ICTOrderBlockDetector,
     OrderBlock,
@@ -239,6 +246,10 @@ __all__ = [
     "MSSEvent",
     "MSSLiquidityEvent",
     "MSSStatus",
+    "MitigationBlock",
+    "MitigationQualityGrade",
+    "MitigationRetestStatus",
+    "MitigationType",
     "OrderBlock",
     "OrderBlockAlternativeZones",
     "OrderBlockCandle",
@@ -291,6 +302,7 @@ __all__ = [
     "detect_liquidity_pools",
     "detect_liquidity_sweep",
     "detect_mss",
+    "detect_mitigation_blocks",
     "detect_order_blocks",
     "detect_poi_zones",
     "detect_swings",
