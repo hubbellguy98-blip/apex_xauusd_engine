@@ -23,6 +23,13 @@ from src.analytics.ict_smc.bearish_order_block import (
     detect_bearish_order_block,
     validate_bearish_ob_retest,
 )
+from src.analytics.ict_smc.breaker_block import (
+    BreakerBlock,
+    BreakerConfidenceGrade,
+    BreakerRetestStatus,
+    BreakerType,
+    detect_breaker_blocks,
+)
 from src.analytics.ict_smc.bullish_order_block import (
     BullishOBQualityGrade,
     BullishOBRetestStatus,
@@ -168,6 +175,10 @@ __all__ = [
     "BearishOBQualityGrade",
     "BearishOBRetestStatus",
     "BearishOBRetestValidation",
+    "BreakerBlock",
+    "BreakerConfidenceGrade",
+    "BreakerRetestStatus",
+    "BreakerType",
     "BullishOBQualityGrade",
     "BullishOBRetestStatus",
     "BullishOBRetestValidation",
@@ -271,6 +282,7 @@ __all__ = [
     "TradeDirectionBias",
     "confirm_poi_reaction",
     "detect_bearish_order_block",
+    "detect_breaker_blocks",
     "detect_bos",
     "detect_bullish_order_block",
     "detect_choch",
