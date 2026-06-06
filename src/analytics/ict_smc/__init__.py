@@ -63,6 +63,16 @@ from src.analytics.ict_smc.draw_on_liquidity import (
     TradeDirectionBias,
     determine_draw_on_liquidity,
 )
+from src.analytics.ict_smc.dealing_range import (
+    DealingRangeCandidate,
+    DealingRangeDirection,
+    ICTDealingRangeQualityGrade,
+    ICTDealingRangeType,
+    RangeLiquidityLevel,
+    RangeLiquidityLocation,
+    RangeSwingAnchor,
+    identify_dealing_range,
+)
 from src.analytics.ict_smc.displacement import (
     AggressionEstimate,
     DisplacementDirection,
@@ -236,6 +246,8 @@ __all__ = [
     "CHoCHPreviousMovement",
     "CHoCHStatus",
     "DealingRangeAnchor",
+    "DealingRangeCandidate",
+    "DealingRangeDirection",
     "DealingRangeQualityGrade",
     "DealingRangeType",
     "DetectedSwingPoint",
@@ -261,6 +273,8 @@ __all__ = [
     "ICTDrawOnLiquidityAnalyzer",
     "ICTBOSDetector",
     "ICTCHoCHDetector",
+    "ICTDealingRangeQualityGrade",
+    "ICTDealingRangeType",
     "ImbalanceActiveStatus",
     "ImbalanceDetectionMethod",
     "ImbalanceDisplacementStrength",
@@ -341,6 +355,9 @@ __all__ = [
     "PriceZone",
     "PreviousMovement",
     "PointOfInterestZone",
+    "RangeLiquidityLevel",
+    "RangeLiquidityLocation",
+    "RangeSwingAnchor",
     "StructureBreak",
     "StructureBreakKind",
     "StructureTrend",
@@ -375,6 +392,7 @@ __all__ = [
     "detect_swings",
     "determine_draw_on_liquidity",
     "evaluate_poi_premium_discount",
+    "identify_dealing_range",
     "validate_bearish_ob_retest",
     "validate_bullish_ob_retest",
 ]
