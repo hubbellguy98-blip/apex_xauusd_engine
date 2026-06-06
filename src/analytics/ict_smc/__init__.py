@@ -63,6 +63,14 @@ from src.analytics.ict_smc.draw_on_liquidity import (
     TradeDirectionBias,
     determine_draw_on_liquidity,
 )
+from src.analytics.ict_smc.displacement import (
+    AggressionEstimate,
+    DisplacementDirection,
+    DisplacementEvent,
+    DisplacementMode,
+    DisplacementStrengthLabel,
+    detect_displacement,
+)
 from src.analytics.ict_smc.fair_value_gap import (
     FVGActiveStatus,
     FVGDisplacementStrength,
@@ -215,6 +223,11 @@ __all__ = [
     "CHoCHPreviousMovement",
     "CHoCHStatus",
     "DetectedSwingPoint",
+    "AggressionEstimate",
+    "DisplacementDirection",
+    "DisplacementEvent",
+    "DisplacementMode",
+    "DisplacementStrengthLabel",
     "DrawCandidate",
     "DrawConfidenceGrade",
     "DrawDirection",
@@ -325,6 +338,7 @@ __all__ = [
     "detect_bos",
     "detect_bullish_order_block",
     "detect_choch",
+    "detect_displacement",
     "detect_equal_highs",
     "detect_equal_lows",
     "detect_fvg",
