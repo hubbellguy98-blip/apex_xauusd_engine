@@ -71,6 +71,15 @@ from src.analytics.ict_smc.fair_value_gap import (
     FairValueGap,
     detect_fvg,
 )
+from src.analytics.ict_smc.imbalance import (
+    ImbalanceActiveStatus,
+    ImbalanceDetectionMethod,
+    ImbalanceDisplacementStrength,
+    ImbalanceQualityGrade,
+    ImbalanceType,
+    ImbalanceZone,
+    detect_imbalances,
+)
 from src.analytics.ict_smc.liquidity import (
     ICTLiquidityDetector,
     LiquidityConfluence,
@@ -223,6 +232,12 @@ __all__ = [
     "ICTDrawOnLiquidityAnalyzer",
     "ICTBOSDetector",
     "ICTCHoCHDetector",
+    "ImbalanceActiveStatus",
+    "ImbalanceDetectionMethod",
+    "ImbalanceDisplacementStrength",
+    "ImbalanceQualityGrade",
+    "ImbalanceType",
+    "ImbalanceZone",
     "ICTLiquidityDetector",
     "ICTLiquiditySweepDetector",
     "ICTMarketStructureAnalyzer",
@@ -313,6 +328,7 @@ __all__ = [
     "detect_equal_highs",
     "detect_equal_lows",
     "detect_fvg",
+    "detect_imbalances",
     "detect_liquidity_pools",
     "detect_liquidity_sweep",
     "detect_mss",
