@@ -116,6 +116,15 @@ from src.analytics.ict_smc.internal_external_liquidity import (
     TargetRole,
     classify_liquidity_internal_external,
 )
+from src.analytics.ict_smc.judas_swing import (
+    JudasClassification,
+    JudasLiquiditySide,
+    JudasManipulationSide,
+    JudasQualityGrade,
+    JudasReclaimStatus,
+    JudasType,
+    detect_judas_swing,
+)
 from src.analytics.ict_smc.liquidity import (
     ICTLiquidityDetector,
     LiquidityConfluence,
@@ -338,6 +347,12 @@ __all__ = [
     "ImbalanceZone",
     "InternalExternalClassification",
     "ICTLiquidityDetector",
+    "JudasClassification",
+    "JudasLiquiditySide",
+    "JudasManipulationSide",
+    "JudasQualityGrade",
+    "JudasReclaimStatus",
+    "JudasType",
     "ICTLiquiditySweepDetector",
     "ICTMarketStructureAnalyzer",
     "ICTMSSDetector",
@@ -453,6 +468,7 @@ __all__ = [
     "detect_equal_lows",
     "detect_fvg",
     "detect_imbalances",
+    "detect_judas_swing",
     "detect_liquidity_pools",
     "detect_liquidity_sweep",
     "detect_mss",
