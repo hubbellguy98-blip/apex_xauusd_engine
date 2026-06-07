@@ -81,6 +81,15 @@ from src.analytics.ict_smc.displacement import (
     DisplacementStrengthLabel,
     detect_displacement,
 )
+from src.analytics.ict_smc.equal_highs_lows import (
+    EqualLiquidityDirection,
+    EqualLiquidityPool,
+    EqualLiquidityQualityGrade,
+    EqualLiquidityStatus,
+    EqualLiquiditySweepType,
+    EqualLiquidityType,
+    detect_equal_highs_lows,
+)
 from src.analytics.ict_smc.fair_value_gap import (
     FVGActiveStatus,
     FVGDisplacementStrength,
@@ -275,6 +284,12 @@ __all__ = [
     "DrawPOIReference",
     "DrawPriceZone",
     "DrawTargetStatus",
+    "EqualLiquidityDirection",
+    "EqualLiquidityPool",
+    "EqualLiquidityQualityGrade",
+    "EqualLiquidityStatus",
+    "EqualLiquiditySweepType",
+    "EqualLiquidityType",
     "ExternalLiquiditySide",
     "FVGActiveStatus",
     "FVGDisplacementStrength",
@@ -395,6 +410,7 @@ __all__ = [
     "detect_bullish_order_block",
     "detect_choch",
     "detect_displacement",
+    "detect_equal_highs_lows",
     "detect_equal_highs",
     "detect_equal_lows",
     "detect_fvg",
