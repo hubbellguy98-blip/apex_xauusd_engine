@@ -266,6 +266,16 @@ from src.analytics.ict_smc.amd_model import (
     AMDType,
     detect_amd_model,
 )
+from src.analytics.ict_smc.silver_bullet import (
+    SilverBulletClassification,
+    SilverBulletDirection,
+    SilverBulletFVGType,
+    SilverBulletQualityGrade,
+    SilverBulletReclaimStatus,
+    SilverBulletRetestStatus,
+    SilverBulletSweepSide,
+    detect_silver_bullet_setup,
+)
 from src.analytics.ict_smc.swing_points import (
     DetectedSwingPoint,
     ICTSwingPointDetector,
@@ -450,6 +460,13 @@ __all__ = [
     "PreviousDayReactionBias",
     "PreviousMovement",
     "PointOfInterestZone",
+    "SilverBulletClassification",
+    "SilverBulletDirection",
+    "SilverBulletFVGType",
+    "SilverBulletQualityGrade",
+    "SilverBulletReclaimStatus",
+    "SilverBulletRetestStatus",
+    "SilverBulletSweepSide",
     "RangeLiquidityLevel",
     "RangeLiquidityLocation",
     "RangeSwingAnchor",
@@ -493,6 +510,7 @@ __all__ = [
     "detect_poi_zones",
     "detect_pdh_pdl_raid",
     "detect_asian_range_sweep",
+    "detect_silver_bullet_setup",
     "detect_swings",
     "determine_draw_on_liquidity",
     "evaluate_poi_premium_discount",
