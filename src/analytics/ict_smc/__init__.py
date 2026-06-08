@@ -125,6 +125,12 @@ from src.analytics.ict_smc.judas_swing import (
     JudasType,
     detect_judas_swing,
 )
+from src.analytics.ict_smc.killzone import (
+    KillzoneFilterMode,
+    KillzoneTimezoneStatus,
+    filter_setups_by_killzone,
+    is_in_killzone,
+)
 from src.analytics.ict_smc.liquidity import (
     ICTLiquidityDetector,
     LiquidityConfluence,
@@ -378,6 +384,8 @@ __all__ = [
     "JudasQualityGrade",
     "JudasReclaimStatus",
     "JudasType",
+    "KillzoneFilterMode",
+    "KillzoneTimezoneStatus",
     "ICTLiquiditySweepDetector",
     "ICTMarketStructureAnalyzer",
     "ICTMSSDetector",
@@ -502,6 +510,8 @@ __all__ = [
     "detect_imbalances",
     "detect_amd_model",
     "detect_judas_swing",
+    "filter_setups_by_killzone",
+    "is_in_killzone",
     "detect_liquidity_pools",
     "detect_liquidity_sweep",
     "detect_mss",
