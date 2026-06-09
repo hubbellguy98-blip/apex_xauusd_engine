@@ -169,6 +169,13 @@ from src.analytics.ict_smc.liquidity_sweep import (
     LiquiditySweepType,
     detect_liquidity_sweep,
 )
+from src.analytics.ict_smc.liquidity_to_liquidity import (
+    LiquidityPathBias,
+    LiquidityPathGrade,
+    LiquiditySide,
+    LiquidityTargetRole,
+    map_liquidity_to_liquidity_path,
+)
 from src.analytics.ict_smc.market_structure import (
     ICTMarketStructureAnalyzer,
     MarketStructureAnalysis,
@@ -443,6 +450,10 @@ __all__ = [
     "LiquiditySweepRejectionStrength",
     "LiquiditySweepSetupStatus",
     "LiquiditySweepType",
+    "LiquidityPathBias",
+    "LiquidityPathGrade",
+    "LiquiditySide",
+    "LiquidityTargetRole",
     "LiquidityTolerance",
     "LiquidityType",
     "MarketStructureAnalysis",
@@ -558,6 +569,7 @@ __all__ = [
     "is_in_killzone",
     "detect_liquidity_pools",
     "detect_liquidity_sweep",
+    "map_liquidity_to_liquidity_path",
     "detect_mss",
     "detect_mitigation_blocks",
     "detect_new_york_open_raid",
