@@ -315,6 +315,13 @@ from src.analytics.ict_smc.silver_bullet import (
     SilverBulletSweepSide,
     detect_silver_bullet_setup,
 )
+from src.analytics.ict_smc.stop_hunt_reversal import (
+    StopHuntConfidenceGrade,
+    StopHuntReclaimStatus,
+    StopHuntSide,
+    StopHuntType,
+    detect_stop_hunt_reversal,
+)
 from src.analytics.ict_smc.swing_points import (
     DetectedSwingPoint,
     ICTSwingPointDetector,
@@ -528,6 +535,10 @@ __all__ = [
     "SessionLiquiditySide",
     "SessionReclaimStatus",
     "SessionSweepStatus",
+    "StopHuntConfidenceGrade",
+    "StopHuntReclaimStatus",
+    "StopHuntSide",
+    "StopHuntType",
     "RangeLiquidityLevel",
     "RangeLiquidityLocation",
     "RangeSwingAnchor",
@@ -579,6 +590,7 @@ __all__ = [
     "detect_asian_range_sweep",
     "detect_session_liquidity_sweep",
     "detect_silver_bullet_setup",
+    "detect_stop_hunt_reversal",
     "detect_swings",
     "determine_draw_on_liquidity",
     "evaluate_poi_premium_discount",
