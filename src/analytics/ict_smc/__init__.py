@@ -315,6 +315,14 @@ from src.analytics.ict_smc.silver_bullet import (
     SilverBulletSweepSide,
     detect_silver_bullet_setup,
 )
+from src.analytics.ict_smc.smt_divergence import (
+    SMTCorrelationType,
+    SMTDirectionBias,
+    SMTDivergenceType,
+    SMTSwingType,
+    SMTSynchronizationStatus,
+    detect_smt_divergence,
+)
 from src.analytics.ict_smc.stop_hunt_reversal import (
     StopHuntConfidenceGrade,
     StopHuntReclaimStatus,
@@ -530,6 +538,11 @@ __all__ = [
     "SilverBulletReclaimStatus",
     "SilverBulletRetestStatus",
     "SilverBulletSweepSide",
+    "SMTCorrelationType",
+    "SMTDirectionBias",
+    "SMTDivergenceType",
+    "SMTSwingType",
+    "SMTSynchronizationStatus",
     "SessionExpectedBias",
     "SessionLevelType",
     "SessionLiquiditySide",
@@ -590,6 +603,7 @@ __all__ = [
     "detect_asian_range_sweep",
     "detect_session_liquidity_sweep",
     "detect_silver_bullet_setup",
+    "detect_smt_divergence",
     "detect_stop_hunt_reversal",
     "detect_swings",
     "determine_draw_on_liquidity",
