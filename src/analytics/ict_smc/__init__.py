@@ -70,6 +70,13 @@ from src.analytics.ict_smc.entry_model import (
     EntryType,
     generate_entry_signal,
 )
+from src.analytics.ict_smc.setup_scoring import (
+    SetupGrade,
+    SetupScoreDirection,
+    SetupScoreStatus,
+    SetupScoringMode,
+    score_smc_setup,
+)
 from src.analytics.ict_smc.dealing_range import (
     DealingRangeCandidate,
     DealingRangeDirection,
@@ -587,6 +594,10 @@ __all__ = [
     "SessionLiquiditySide",
     "SessionReclaimStatus",
     "SessionSweepStatus",
+    "SetupGrade",
+    "SetupScoreDirection",
+    "SetupScoreStatus",
+    "SetupScoringMode",
     "StopHuntConfidenceGrade",
     "StopHuntReclaimStatus",
     "StopHuntSide",
@@ -662,6 +673,7 @@ __all__ = [
     "identify_dealing_range",
     "is_news_restricted_time",
     "score_volume_confirmation",
+    "score_smc_setup",
     "select_smc_targets",
     "validate_bearish_ob_retest",
     "validate_bullish_ob_retest",
