@@ -330,6 +330,12 @@ from src.analytics.ict_smc.stop_hunt_reversal import (
     StopHuntType,
     detect_stop_hunt_reversal,
 )
+from src.analytics.ict_smc.volume_confirmation import (
+    VolumeConfirmationStatus,
+    VolumeDirection,
+    VolumeEventType,
+    score_volume_confirmation,
+)
 from src.analytics.ict_smc.swing_points import (
     DetectedSwingPoint,
     ICTSwingPointDetector,
@@ -552,6 +558,9 @@ __all__ = [
     "StopHuntReclaimStatus",
     "StopHuntSide",
     "StopHuntType",
+    "VolumeConfirmationStatus",
+    "VolumeDirection",
+    "VolumeEventType",
     "RangeLiquidityLevel",
     "RangeLiquidityLocation",
     "RangeSwingAnchor",
@@ -609,6 +618,7 @@ __all__ = [
     "determine_draw_on_liquidity",
     "evaluate_poi_premium_discount",
     "identify_dealing_range",
+    "score_volume_confirmation",
     "validate_bearish_ob_retest",
     "validate_bullish_ob_retest",
 ]
