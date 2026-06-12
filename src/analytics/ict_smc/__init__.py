@@ -344,6 +344,12 @@ from src.analytics.ict_smc.stop_hunt_reversal import (
     StopHuntType,
     detect_stop_hunt_reversal,
 )
+from src.analytics.ict_smc.stop_loss_logic import (
+    StopDirection,
+    StopMode,
+    StopStatus,
+    calculate_smc_stop_loss,
+)
 from src.analytics.ict_smc.volume_confirmation import (
     VolumeConfirmationStatus,
     VolumeDirection,
@@ -579,6 +585,9 @@ __all__ = [
     "StopHuntReclaimStatus",
     "StopHuntSide",
     "StopHuntType",
+    "StopDirection",
+    "StopMode",
+    "StopStatus",
     "VolumeConfirmationStatus",
     "VolumeDirection",
     "VolumeEventType",
@@ -636,6 +645,7 @@ __all__ = [
     "detect_silver_bullet_setup",
     "detect_smt_divergence",
     "detect_stop_hunt_reversal",
+    "calculate_smc_stop_loss",
     "detect_swings",
     "determine_draw_on_liquidity",
     "evaluate_poi_premium_discount",
