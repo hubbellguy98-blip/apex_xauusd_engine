@@ -215,6 +215,13 @@ from src.analytics.ict_smc.new_york_open_raid import (
     NewYorkReclaimStatus,
     detect_new_york_open_raid,
 )
+from src.analytics.ict_smc.news_filter import (
+    NewsRestrictionReason,
+    PostNewsDirection,
+    PostNewsSetupStatus,
+    detect_post_news_smc_setup,
+    is_news_restricted_time,
+)
 from src.analytics.ict_smc.order_block import (
     ICTOrderBlockDetector,
     OrderBlock,
@@ -496,6 +503,7 @@ __all__ = [
     "NewYorkRaidDirection",
     "NewYorkRaidType",
     "NewYorkReclaimStatus",
+    "NewsRestrictionReason",
     "OrderBlock",
     "OrderBlockAlternativeZones",
     "OrderBlockCandle",
@@ -537,6 +545,8 @@ __all__ = [
     "PreviousDayReactionBias",
     "PreviousMovement",
     "PointOfInterestZone",
+    "PostNewsDirection",
+    "PostNewsSetupStatus",
     "SilverBulletClassification",
     "SilverBulletDirection",
     "SilverBulletFVGType",
@@ -606,6 +616,7 @@ __all__ = [
     "detect_mss",
     "detect_mitigation_blocks",
     "detect_new_york_open_raid",
+    "detect_post_news_smc_setup",
     "detect_order_blocks",
     "detect_poi_zones",
     "detect_pdh_pdl_raid",
@@ -618,6 +629,7 @@ __all__ = [
     "determine_draw_on_liquidity",
     "evaluate_poi_premium_discount",
     "identify_dealing_range",
+    "is_news_restricted_time",
     "score_volume_confirmation",
     "validate_bearish_ob_retest",
     "validate_bullish_ob_retest",
