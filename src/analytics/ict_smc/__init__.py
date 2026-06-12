@@ -350,6 +350,12 @@ from src.analytics.ict_smc.stop_loss_logic import (
     StopStatus,
     calculate_smc_stop_loss,
 )
+from src.analytics.ict_smc.target_logic import (
+    TargetDirection,
+    TargetSide,
+    TargetStatus,
+    select_smc_targets,
+)
 from src.analytics.ict_smc.volume_confirmation import (
     VolumeConfirmationStatus,
     VolumeDirection,
@@ -588,6 +594,9 @@ __all__ = [
     "StopDirection",
     "StopMode",
     "StopStatus",
+    "TargetDirection",
+    "TargetSide",
+    "TargetStatus",
     "VolumeConfirmationStatus",
     "VolumeDirection",
     "VolumeEventType",
@@ -653,6 +662,7 @@ __all__ = [
     "identify_dealing_range",
     "is_news_restricted_time",
     "score_volume_confirmation",
+    "select_smc_targets",
     "validate_bearish_ob_retest",
     "validate_bullish_ob_retest",
 ]
