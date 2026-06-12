@@ -63,6 +63,13 @@ from src.analytics.ict_smc.draw_on_liquidity import (
     TradeDirectionBias,
     determine_draw_on_liquidity,
 )
+from src.analytics.ict_smc.entry_model import (
+    EntryDirection,
+    EntryMode,
+    EntryStatus,
+    EntryType,
+    generate_entry_signal,
+)
 from src.analytics.ict_smc.dealing_range import (
     DealingRangeCandidate,
     DealingRangeDirection,
@@ -420,6 +427,10 @@ __all__ = [
     "EqualLiquidityStatus",
     "EqualLiquiditySweepType",
     "EqualLiquidityType",
+    "EntryDirection",
+    "EntryMode",
+    "EntryStatus",
+    "EntryType",
     "ExternalLiquiditySide",
     "FVGActiveStatus",
     "FVGDisplacementStrength",
@@ -628,6 +639,7 @@ __all__ = [
     "detect_swings",
     "determine_draw_on_liquidity",
     "evaluate_poi_premium_discount",
+    "generate_entry_signal",
     "identify_dealing_range",
     "is_news_restricted_time",
     "score_volume_confirmation",
