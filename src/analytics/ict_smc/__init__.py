@@ -77,6 +77,12 @@ from src.analytics.ict_smc.setup_scoring import (
     SetupScoringMode,
     score_smc_setup,
 )
+from src.analytics.ict_smc.risk_management import (
+    RiskDecisionStatus,
+    RiskDirection,
+    calculate_position_size,
+    validate_trade_risk,
+)
 from src.analytics.ict_smc.multitimeframe_engine import (
     MTFDirection,
     MTFStatus,
@@ -632,6 +638,8 @@ __all__ = [
     "RangeLiquidityLevel",
     "RangeLiquidityLocation",
     "RangeSwingAnchor",
+    "RiskDecisionStatus",
+    "RiskDirection",
     "StructureBreak",
     "StructureBreakKind",
     "StructureTrend",
@@ -651,6 +659,7 @@ __all__ = [
     "build_h1_bias_context",
     "build_multitimeframe_context",
     "calculate_premium_discount",
+    "calculate_position_size",
     "calculate_previous_day_levels",
     "calculate_session_high_low",
     "calculate_session_range",
@@ -705,4 +714,5 @@ __all__ = [
     "select_smc_targets",
     "validate_bearish_ob_retest",
     "validate_bullish_ob_retest",
+    "validate_trade_risk",
 ]
