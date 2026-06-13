@@ -133,6 +133,12 @@ from src.analytics.ict_smc.fair_value_gap import (
     FairValueGap,
     detect_fvg,
 )
+from src.analytics.ict_smc.false_positive_filter import (
+    FalsePositiveCategory,
+    FalsePositiveStatus,
+    FilterMode,
+    filter_false_smc_signals,
+)
 from src.analytics.ict_smc.imbalance import (
     ImbalanceActiveStatus,
     ImbalanceDetectionMethod,
@@ -477,6 +483,9 @@ __all__ = [
     "FVGQualityGrade",
     "FVGType",
     "FairValueGap",
+    "FalsePositiveCategory",
+    "FalsePositiveStatus",
+    "FilterMode",
     "ICTDrawOnLiquidityAnalyzer",
     "ICTBOSDetector",
     "ICTCHoCHDetector",
@@ -675,6 +684,7 @@ __all__ = [
     "detect_equal_highs",
     "detect_equal_lows",
     "detect_fvg",
+    "filter_false_smc_signals",
     "detect_imbalances",
     "detect_amd_model",
     "detect_judas_swing",
