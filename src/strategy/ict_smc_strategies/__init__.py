@@ -59,10 +59,20 @@ from src.strategy.ict_smc_strategies.breaker_block import (
     score_breaker_setup,
     validate_breaker_reaction,
 )
+from src.strategy.ict_smc_strategies.power_of_three_amd import (
+    detect_accumulation_range,
+    detect_distribution_shift,
+    detect_manipulation_sweep,
+    generate_amd_signal,
+    score_accumulation_quality,
+    score_amd_setup,
+)
 
 __all__ = [
     "calculate_session_range",
+    "detect_accumulation_range",
     "detect_displacement",
+    "detect_distribution_shift",
     "detect_fvg",
     "detect_fvg_continuation_displacement",
     "detect_fvg_continuation_fvg",
@@ -75,6 +85,7 @@ __all__ = [
     "detect_judas_mss",
     "detect_judas_sweep",
     "detect_liquidity_sweep",
+    "detect_manipulation_sweep",
     "detect_mss",
     "detect_ob_displacement",
     "detect_ob_liquidity_sweep",
@@ -86,6 +97,7 @@ __all__ = [
     "detect_silver_bullet_fvg",
     "detect_silver_bullet_sweep",
     "detect_window_liquidity",
+    "generate_amd_signal",
     "generate_breaker_signal",
     "generate_judas_swing_signal",
     "generate_fvg_continuation_signal",
@@ -93,6 +105,8 @@ __all__ = [
     "generate_sweep_mss_fvg_signal",
     "generate_silver_bullet_signal",
     "is_in_silver_bullet_window",
+    "score_accumulation_quality",
+    "score_amd_setup",
     "score_judas_swing_setup",
     "score_fvg_continuation_setup",
     "score_breaker_setup",
