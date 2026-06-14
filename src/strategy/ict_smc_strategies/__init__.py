@@ -50,6 +50,15 @@ from src.strategy.ict_smc_strategies.fvg_continuation import (
     score_fvg_continuation_setup,
     validate_fvg_continuation,
 )
+from src.strategy.ict_smc_strategies.breaker_block import (
+    detect_breaker_block,
+    detect_breaker_retest,
+    detect_order_block_failure,
+    detect_order_blocks,
+    generate_breaker_signal,
+    score_breaker_setup,
+    validate_breaker_reaction,
+)
 
 __all__ = [
     "calculate_session_range",
@@ -60,6 +69,8 @@ __all__ = [
     "detect_fvg_retracement",
     "detect_fvg_retest",
     "detect_bos",
+    "detect_breaker_block",
+    "detect_breaker_retest",
     "detect_htf_bias",
     "detect_judas_mss",
     "detect_judas_sweep",
@@ -68,11 +79,14 @@ __all__ = [
     "detect_ob_displacement",
     "detect_ob_liquidity_sweep",
     "detect_ob_retest",
+    "detect_order_block_failure",
+    "detect_order_blocks",
     "detect_order_block_after_sweep",
     "detect_range_reclaim",
     "detect_silver_bullet_fvg",
     "detect_silver_bullet_sweep",
     "detect_window_liquidity",
+    "generate_breaker_signal",
     "generate_judas_swing_signal",
     "generate_fvg_continuation_signal",
     "generate_ob_retest_signal",
@@ -81,10 +95,12 @@ __all__ = [
     "is_in_silver_bullet_window",
     "score_judas_swing_setup",
     "score_fvg_continuation_setup",
+    "score_breaker_setup",
     "score_ob_retest_setup",
     "score_silver_bullet_setup",
     "score_session_range_quality",
     "score_sweep_mss_fvg_setup",
+    "validate_breaker_reaction",
     "validate_ob_reaction",
     "validate_fvg_continuation",
 ]
