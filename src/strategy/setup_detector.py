@@ -13,7 +13,6 @@ from src.core.base_engine import BaseSubsystem
 from src.core.events.event_bus import EventBus
 from src.core.events.event_types import EngineEventType
 from src.core.domain.market_data import TickNode, CandleNode
-from src.core.domain.constants import OrderDirection
 from src.core.domain.confirmation_models import ConfirmationSnapshot
 from src.strategy.state_manager import CentralRuntimeStateManager
 from src.strategy.confirmation_orchestrator import TradeConfirmationOrchestrator
@@ -22,8 +21,7 @@ from src.strategy.confirmation_orchestrator import TradeConfirmationOrchestrator
 from src.analytics.liquidity_engine import LiquidityInterceptionEngine
 from src.analytics.session_engine import GoldSessionIntelligenceEngine
 from src.analytics.structure_engine import DeterministicStructureEngine
-from src.core.domain.setup_models import SetupOpportunityNode, SetupType, SetupQualityTier
-from src.strategy.setup_quality import InstitutionalSetupQualityClassifier
+from src.core.domain.setup_models import SetupOpportunityNode
 from src.strategy.setup_lifecycle import SetupLifecycleManager
 from src.strategy.ict_smc_strategy_selector import ICTSMCStrategySelector
 
@@ -39,12 +37,13 @@ class MarketSetupOrchestrator(BaseSubsystem):
         self._confirmation_engine = confirmation_engine
 
         # Instantiate analytical sub-modules
-        self._quality_classifier = InstitutionalSetupQualityClassifier()
         self._lifecycle_tracker = SetupLifecycleManager()
         self._structure_engine = DeterministicStructureEngine("1m")
         self._liquidity_engine = LiquidityInterceptionEngine("1m")
         self._session_engine = GoldSessionIntelligenceEngine()
         self._strategy_selector = ICTSMCStrategySelector()
+        self._selector_evaluation_interval = timedelta(seconds=1)
+        self._last_selector_evaluation_at: datetime | None = None
 
         # In-memory allocation arrays
         self._discovered_setups: Dict[str, SetupOpportunityNode] = {}
@@ -133,6 +132,10 @@ class MarketSetupOrchestrator(BaseSubsystem):
             self._diagnostics["live_sweeps_detected"] += len(swept_pools)
         if not self._candles_by_timeframe["1m"]:
             return
+        if not swept_pools and self._last_selector_evaluation_at is not None:
+            if current_time - self._last_selector_evaluation_at < self._selector_evaluation_interval:
+                return
+        self._last_selector_evaluation_at = current_time
         context = self._build_ict_strategy_context(event, swept_pools, session)
         selection = self._strategy_selector.evaluate(context)
         self._latest_strategy_selection = selection.diagnostics
@@ -378,61 +381,6 @@ class MarketSetupOrchestrator(BaseSubsystem):
             )
             self._warmup_sweeps_cleared += len(self._liquidity_engine.evaluate_tick_sweeps(close_tick))
         await self.on_candle_evacuation(event)
-
-    async def _process_discovered_candidate(self, setup_type: SetupType, direction: OrderDirection, entry: float, sl: float, tp: float, trigger_source: CandleNode, timeframe: str) -> None:
-        """Runs the validation sequence, grades setup quality, and publishes approved setup nodes."""
-        
-        # 1. Enforce Cooldown Protection Gates to Prevent Signal Spam
-        cooldown_key = f"{setup_type.value}_{direction.value}"
-        current_time = datetime.utcnow()
-        if cooldown_key in self._cooldown_registry:
-            if current_time < self._cooldown_registry[cooldown_key]:
-                self._diagnostics["cooldown_blocks"] += 1
-                return  # Block duplicate signals during active cooldown windows
-
-        # 2. Trigger confirmation using directional bias learned from received closed candles.
-        directional_bias = self.directional_bias_matrix
-        is_confirmed, confirmation_snap = await self._confirmation_engine.process_candidate_setup(
-            direction, current_time, trigger_source, directional_bias, 3.0
-        )
-
-        if not is_confirmed:
-            self._diagnostics["confirmation_blocks"] += 1
-            self._latest_confirmation_reasons = list(confirmation_snap.invalidation_reasons)
-            return  # Reject candidate nodes that fail confirmation criteria
-
-        # 3. Grade Core Risk and Quality Parameters
-        state_snap = self._state_manager.snapshot
-        estimated_rr = abs(tp - entry) / abs(entry - sl) if abs(entry - sl) > 0 else 0.0
-        
-        quality_tier, final_score = self._quality_classifier.classify_setup_quality(
-            setup_type, estimated_rr, state_snap, confirmation_snap
-        )
-
-        if quality_tier == SetupQualityTier.INVALID_SETUP:
-            self._diagnostics["quality_blocks"] += 1
-            return  # Filter out low-quality or invalid setups
-
-        # 4. Construct and Route Type-Safe Setup Node
-        self._setup_counter += 1
-        setup_id = f"STP_{setup_type.value}_{self._setup_counter}_{int(current_time.timestamp())}"
-        
-        opportunity_node = SetupOpportunityNode(
-            id=setup_id, setup_type=setup_type, direction=direction,
-            entry_price=entry, stop_loss=sl, take_profit=tp, estimated_rr=estimated_rr,
-            quality_tier=quality_tier, confidence_score=final_score,
-            creation_time=current_time, expiration_time=current_time + timedelta(minutes=45),
-            correlation_id=getattr(trigger_source, 'correlation_id', 'MANUAL_DISCOVERY'),
-            timeframe=timeframe
-        )
-
-        # Update system caches and activate the cooldown firewall
-        self._discovered_setups[setup_id] = opportunity_node
-        self._cooldown_registry[cooldown_key] = current_time + timedelta(minutes=15) # 15-minute cooldown per strategy configuration
-        self._qualified_candidates.append((opportunity_node, confirmation_snap))
-        self._diagnostics["setup_nodes_finalized"] += 1
-
-        logger.info("setup_orchestrator.signal_finalized", id=setup_id, tier=quality_tier.value, rr=f"{estimated_rr:.2f}")
 
     @property
     def directional_bias_matrix(self) -> Dict[str, str]:

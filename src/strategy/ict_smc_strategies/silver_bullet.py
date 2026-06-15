@@ -18,7 +18,7 @@ from datetime import datetime, time, timedelta, timezone
 from enum import Enum
 from statistics import mean
 from typing import Any, Mapping, Sequence
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 class SilverBulletDirection(str, Enum):
@@ -846,9 +846,31 @@ def _as_datetime(value: Any, broker_timezone: str | timezone | None) -> datetime
 def _tz(value: str | timezone | ZoneInfo) -> timezone | ZoneInfo:
     if isinstance(value, (timezone, ZoneInfo)):
         return value
-    if str(value).upper() == "UTC":
+    name = str(value)
+    if name.upper() == "UTC":
         return timezone.utc
-    return ZoneInfo(str(value))
+    try:
+        return ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        return _fixed_timezone_fallback(name)
+
+
+def _fixed_timezone_fallback(name: str) -> timezone:
+    """Keep Silver Bullet deterministic on Windows hosts without IANA tzdata."""
+
+    offsets = {
+        "Europe/London": 1,
+        "America/New_York": -4,
+        "Asia/Kolkata": 5.5,
+    }
+    hours = offsets.get(name)
+    if hours is None:
+        return timezone.utc
+    sign = 1 if hours >= 0 else -1
+    absolute = abs(hours)
+    whole_hours = int(absolute)
+    minutes = int(round((absolute - whole_hours) * 60))
+    return timezone(sign * timedelta(hours=whole_hours, minutes=minutes), name)
 
 
 def _closed_candles(rows: Sequence[Mapping[str, Any] | Any] | Any) -> list[_Candle]:
