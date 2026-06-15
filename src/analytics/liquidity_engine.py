@@ -104,3 +104,31 @@ class LiquidityInterceptionEngine:
             "is_equal_structure": nearest.is_equal_structure,
             "touches": nearest.accumulated_touches,
         }
+
+    def active_pools_snapshot(self) -> List[Dict[str, Any]]:
+        """Expose unswept liquidity pools in the strategy-library context shape."""
+        snapshots: List[Dict[str, Any]] = []
+        for pool in self._pools:
+            if pool.is_swept:
+                continue
+            side = "buy_side" if pool.is_buy_side else "sell_side"
+            level = pool.ceiling_price if pool.is_buy_side else pool.floor_price
+            snapshots.append(
+                {
+                    "id": pool.id,
+                    "liquidity_id": pool.id,
+                    "timeframe": pool.timeframe,
+                    "side": side,
+                    "direction": side,
+                    "price": level,
+                    "zone_low": pool.floor_price,
+                    "zone_high": pool.ceiling_price,
+                    "quality_score": min(10.0, 5.0 + pool.accumulated_touches),
+                    "target_priority_score": min(10.0, 5.0 + pool.accumulated_touches),
+                    "touches": pool.accumulated_touches,
+                    "is_equal_structure": pool.is_equal_structure,
+                    "swept_status": "unswept",
+                    "swept": False,
+                }
+            )
+        return snapshots
