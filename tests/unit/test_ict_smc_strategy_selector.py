@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -124,5 +124,56 @@ def test_selector_builds_live_setup_and_confirmation_contracts() -> None:
     assert setup.setup_type is SetupType.ORDER_BLOCK_CONTINUATION
     assert setup.estimated_rr == pytest.approx(3.0)
     assert setup.confidence_score == pytest.approx(89.0)
+    assert setup.expiration_time == now + timedelta(minutes=20)
     assert confirmation.is_validated is True
     assert "valid" in confirmation.validated_components
+
+
+def test_selector_default_gate_skips_disabled_report_loser_strategy() -> None:
+    def valid_disabled_strategy(context, config):
+        return {
+            "trade_allowed": True,
+            "direction": "bullish",
+            "entry": {"entry_price": 100.0},
+            "risk": {"stop_loss": 98.0, "target": 106.0, "rr": 3.0},
+            "score": {"total_score": 9.2, "trade_allowed": True},
+        }
+
+    selector = ICTSMCStrategySelector(
+        (
+            StrategyDefinition(
+                "sweep_mss_fvg",
+                "Sweep MSS FVG",
+                valid_disabled_strategy,
+                SetupType.LIQUIDITY_SWEEP_REVERSAL,
+            ),
+        )
+    )
+
+    result = selector.evaluate(_context())
+
+    assert result.selected is None
+    assert result.evaluations[0].status == "SKIPPED"
+    assert result.evaluations[0].reason == "strategy_disabled_by_risk_gate"
+
+
+def test_selector_default_gate_requires_elite_score_unless_overridden() -> None:
+    def high_probability_only(context, config):
+        return {
+            "trade_allowed": True,
+            "direction": "bullish",
+            "entry": {"entry_price": 100.0},
+            "risk": {"stop_loss": 98.0, "target": 106.0, "rr": 3.0},
+            "score": {"total_score": 8.7, "trade_allowed": True},
+        }
+
+    selector = ICTSMCStrategySelector(
+        (StrategyDefinition("candidate", "Candidate", high_probability_only, SetupType.FVG_CONTINUATION),)
+    )
+
+    blocked = selector.evaluate(_context())
+    allowed = selector.evaluate(_context(), {"minimum_score": 75.0})
+
+    assert blocked.selected is None
+    assert "score_below_minimum:88" in blocked.evaluations[0].reason
+    assert allowed.selected is not None

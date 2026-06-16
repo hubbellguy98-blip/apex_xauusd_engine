@@ -39,7 +39,10 @@ class GoldSessionIntelligenceEngine:
         time_utc = eval_time.astimezone(timezone.utc).time()
         
         # 1. Base Session Determination
-        session = SessionState.SYSTEM_SHUTDOWN
+        # Weekday XAUUSD trading remains active between NY close and Asian open.
+        # Treat that liquidity-reset window as tradable context for general ICT/SMC
+        # models instead of disabling detection as a system shutdown.
+        session = SessionState.POST_NY_RESET
         is_london = self._check_time_in_range(time_utc, self._london_start, self._london_end)
         is_ny = self._check_time_in_range(time_utc, self._ny_start, self._ny_end)
         is_asian = self._check_time_in_range(time_utc, self._asian_start, self._asian_end)

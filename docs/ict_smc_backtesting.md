@@ -161,6 +161,60 @@ print(result["performance_metrics"])
 print(result["skipped_setup_log"])
 ```
 
+## Full-System ICT/SMC Selector Backtest Runner
+
+For pre-deployment testing of the current ICT/SMC selector, use:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_ict_smc_backtest.py --source mt5 --symbol GOLD.i# --from 2026-06-01 --to 2026-06-14
+```
+
+This runner:
+
+- loads historical candles from MT5 using the local `.env` MT5 settings;
+- replays closed 1m candles in chronological order;
+- feeds the current ICT/SMC strategy selector;
+- enforces one simulated position at a time;
+- keeps evaluating strategy candidates while a position is open, then logs them as `blocked_existing_position` instead of hiding them;
+- applies market entry on the next candle open;
+- rejects fills that drift too far away from the original setup entry;
+- applies spread and slippage assumptions;
+- applies the same demo stop-hardening layer unless `--no-stop-hardening` is passed;
+- separates completed-trade metrics from open-at-end mark-to-market positions;
+- writes Markdown, JSON, and CSV reports into `backtest_outputs/`.
+
+Example with stricter execution costs:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_ict_smc_backtest.py --source mt5 --symbol GOLD.i# --from 2026-06-01 --to 2026-06-14 --spread-price 0.40 --slippage-price 0.10
+```
+
+If the backtest shows too few trades, inspect the Strategy Diagnostics section:
+
+- `Selected signals` means the selector found valid setups.
+- `Tradeable signals observed` means strategies produced executable candidates, even if one-position-at-a-time blocked them.
+- `Open-position skips` means the system found opportunities but did not take them because another trade was already active.
+- `Entry-drift skips` means the next executable market price had moved too far from the intended setup entry.
+- `Top rejection reasons` shows whether strict filters such as session, sweep, HTF bias, or news eligibility are suppressing the sample.
+
+For research only, entry-drift protection can be relaxed:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_ict_smc_backtest.py --source mt5 --symbol GOLD.i# --from 2026-06-01 --to 2026-06-14 --max-entry-drift-price -1 --max-entry-drift-risk-fraction 0
+```
+
+Do not use relaxed research results as deployment proof. They are useful for diagnosing whether the strategy layer is too strict, not for proving live profitability.
+
+CSV fallback:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_ict_smc_backtest.py --source csv --symbol GOLD.i# --from 2026-06-01 --to 2026-06-14 --csv-1m .\data\gold_m1.csv
+```
+
+If only 1m CSV data is provided, the runner derives 15m, 1h, and 4h candles from it so multi-timeframe strategy checks can still run.
+
+The runner does not place live or demo broker orders. It is offline simulation only.
+
 ## Final Principle
 
 A good ICT/SMC backtest should be strict, conservative, and explainable. If a strategy still works after closed-candle replay, realistic fills, spread, slippage, session/news filtering, partial management, and stop-first ambiguity, then the result is much more trustworthy.

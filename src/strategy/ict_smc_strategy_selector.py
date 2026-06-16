@@ -41,6 +41,17 @@ logger = structlog.get_logger()
 
 SignalGenerator = Callable[[Mapping[str, Any], Mapping[str, Any] | None], dict[str, Any]]
 
+DEFAULT_MIN_SELECTOR_SCORE = 88.0
+DEFAULT_MIN_SELECTOR_RR = 1.5
+DEFAULT_SETUP_EXPIRATION_MINUTES = 20
+DEFAULT_DISABLED_STRATEGIES = frozenset(
+    {
+        "sweep_mss_fvg",
+        "order_block_retest",
+        "htf_poi_ltf_confirmation",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class StrategyDefinition:
@@ -156,7 +167,7 @@ class ICTSMCStrategySelector:
             quality_tier=self._quality_tier(evaluation.normalized_score),
             confidence_score=float(evaluation.normalized_score),
             creation_time=now,
-            expiration_time=now + timedelta(minutes=45),
+            expiration_time=now + timedelta(minutes=DEFAULT_SETUP_EXPIRATION_MINUTES),
             correlation_id=correlation_id,
             timeframe=timeframe,
         )
@@ -192,6 +203,11 @@ class ICTSMCStrategySelector:
         context: Mapping[str, Any],
         config: Mapping[str, Any] | None,
     ) -> StrategyEvaluation:
+        cfg = dict(config or {})
+        disabled = _strategy_set(cfg, "disabled_strategies", DEFAULT_DISABLED_STRATEGIES)
+        if definition.key in disabled:
+            return StrategyEvaluation(definition=definition, status="SKIPPED", reason="strategy_disabled_by_risk_gate")
+
         eligible, reason = self._is_eligible(definition, context)
         if not eligible:
             return StrategyEvaluation(definition=definition, status="SKIPPED", reason=reason)
@@ -265,6 +281,12 @@ class ICTSMCStrategySelector:
             missing.append("target")
         if rr < 1.5:
             missing.append("rr_below_1_5")
+        min_score = _strategy_threshold(cfg, definition.key, "strategy_min_scores", DEFAULT_MIN_SELECTOR_SCORE)
+        min_rr = _strategy_threshold(cfg, definition.key, "strategy_min_rr", DEFAULT_MIN_SELECTOR_RR)
+        if score < min_score:
+            missing.append(f"score_below_minimum:{min_score:g}")
+        if rr < min_rr:
+            missing.append(f"rr_below_minimum:{min_rr:g}")
         status = "TRADEABLE" if not missing else "REJECTED"
         return StrategyEvaluation(
             definition=definition,
@@ -524,6 +546,29 @@ def _rejection_reason(signal: Mapping[str, Any]) -> str:
     if isinstance(reasons, Sequence):
         return ",".join(str(item) for item in reasons)
     return ""
+
+
+def _strategy_set(config: Mapping[str, Any], key: str, default: frozenset[str]) -> set[str]:
+    if key not in config:
+        return set(default)
+    raw = config.get(key)
+    if raw is None:
+        return set()
+    if isinstance(raw, str):
+        return {item.strip() for item in raw.split(",") if item.strip()}
+    if isinstance(raw, Sequence):
+        return {str(item).strip() for item in raw if str(item).strip()}
+    return set(default)
+
+
+def _strategy_threshold(config: Mapping[str, Any], strategy_key: str, key: str, default: float) -> float:
+    raw = config.get(key)
+    if isinstance(raw, Mapping) and strategy_key in raw and _is_number(raw[strategy_key]):
+        return float(raw[strategy_key])
+    global_key = "minimum_score" if key == "strategy_min_scores" else "minimum_rr"
+    if _is_number(config.get(global_key)):
+        return float(config[global_key])
+    return default
 
 
 def _is_number(value: Any) -> bool:
