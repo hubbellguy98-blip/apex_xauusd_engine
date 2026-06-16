@@ -9,7 +9,7 @@ cannot fill before they are active.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from statistics import mean, median
 from typing import Any, Mapping, Sequence
@@ -457,7 +457,7 @@ def _normalize_order(signal: Mapping[str, Any], config: Mapping[str, Any]) -> _O
     valid_from = _parse_time(data.get("valid_from_time") or data.get("order_placed_time") or signal_time)
     if signal_time is None or valid_from is None:
         raise ValueError("Backtest orders require signal_time/order_placed_time.")
-    expiry = _parse_time(data.get("expiry_time"))
+    expiry = _order_expiry_time(data, config, signal_time)
     targets = tuple(_normalize_targets(data.get("targets") or data.get("target_ladder") or data))
     return _Order(
         order_id=str(data.get("order_id") or data.get("trade_id") or data.get("setup_id") or f"ORDER_{signal_time.isoformat()}"),
@@ -472,6 +472,26 @@ def _normalize_order(signal: Mapping[str, Any], config: Mapping[str, Any]) -> _O
         setup_context=data.get("setup_context", data),
         expiry_time=expiry,
     )
+
+
+def _order_expiry_time(data: Mapping[str, Any], config: Mapping[str, Any], signal_time: datetime) -> datetime | None:
+    setup_context = _mapping(data.get("setup_context"))
+    explicit = (
+        data.get("expiry_time")
+        or data.get("expiration_time")
+        or data.get("valid_until")
+        or setup_context.get("expiry_time")
+        or setup_context.get("expiration_time")
+        or setup_context.get("valid_until")
+    )
+    parsed = _parse_time(explicit)
+    if parsed is not None:
+        return parsed
+
+    max_pending_minutes = _float(config.get("max_pending_minutes", 20.0))
+    if max_pending_minutes is None or max_pending_minutes <= 0:
+        return None
+    return signal_time + timedelta(minutes=max_pending_minutes)
 
 
 def _normalize_targets(value: Any) -> list[dict[str, Any]]:

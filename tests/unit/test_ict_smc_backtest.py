@@ -7,6 +7,7 @@ from src.backtest.ict_smc_backtest import (
     calculate_performance_metrics,
     clean_ohlcv_data,
     generate_backtest_report,
+    place_pending_order,
     run_backtest,
     simulate_order_fill,
     simulate_trade_management,
@@ -86,6 +87,31 @@ def test_market_order_applies_spread_and_slippage_on_next_open() -> None:
     assert fill["filled"] is True
     assert fill["fill_price"] == 101.15
     assert apply_spread_slippage(101.0, "bearish", spread=0.20, slippage=0.05) == 100.85
+
+
+def test_pending_order_uses_signal_expiration_time() -> None:
+    order = place_pending_order(
+        _limit_order(expiration_time="2026-06-04T10:25:00+00:00"),
+        {},
+    )
+    late_touch = _candle("2026-06-04T10:25:00", 101.0, 102.0, 99.0, 100.5)
+
+    fill = simulate_order_fill(order, late_touch)
+
+    assert order["expiry_time"] == "2026-06-04T10:25:00+00:00"
+    assert fill["filled"] is False
+    assert fill["reason"] == "order_expired"
+
+
+def test_pending_order_gets_default_expiry_when_signal_omits_one() -> None:
+    order = place_pending_order(_limit_order(), {})
+    late_touch = _candle("2026-06-04T10:40:00", 101.0, 102.0, 99.0, 100.5)
+
+    fill = simulate_order_fill(order, late_touch)
+
+    assert order["expiry_time"] == "2026-06-04T10:35:00+00:00"
+    assert fill["filled"] is False
+    assert fill["reason"] == "order_expired"
 
 
 def test_same_candle_stop_and_target_uses_conservative_stop_first() -> None:
