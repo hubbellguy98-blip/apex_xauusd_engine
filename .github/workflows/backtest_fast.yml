@@ -1,0 +1,214 @@
+name: XAUUSD Fast Chunk Backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_date:
+        description: "Start date YYYY-MM-DD"
+        required: true
+        default: "2026-05-01"
+      to_date:
+        description: "End date YYYY-MM-DD"
+        required: true
+        default: "2026-05-29"
+      csv_path:
+        description: "CSV path in repo"
+        required: true
+        default: "data/xauusd_m1.csv"
+      chunk_days:
+        description: "Days per chunk. Use 1 for fastest/reliable mobile testing."
+        required: true
+        default: "1"
+      relax_entry_drift:
+        description: "Diagnostic only: allow far market fills"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+concurrency:
+  group: xauusd-fast-backtest-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+    steps:
+      - name: Build date chunks
+        id: build
+        shell: bash
+        env:
+          FROM_DATE: ${{ inputs.from_date }}
+          TO_DATE: ${{ inputs.to_date }}
+          CHUNK_DAYS: ${{ inputs.chunk_days }}
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+          from datetime import datetime, timedelta, timezone
+
+          def parse_date(value: str) -> datetime:
+              text = value.strip()
+              if len(text) == 10:
+                  return datetime.fromisoformat(text).replace(tzinfo=timezone.utc)
+              parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+              return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+          started = parse_date(os.environ["FROM_DATE"])
+          ended = parse_date(os.environ["TO_DATE"])
+          chunk_days = max(1, int(os.environ.get("CHUNK_DAYS", "1")))
+          if ended <= started:
+              raise SystemExit("to_date must be after from_date")
+
+          chunks = []
+          cursor = started
+          while cursor < ended:
+              next_cursor = min(cursor + timedelta(days=chunk_days), ended)
+              label = f"{cursor:%Y%m%d}_{next_cursor:%Y%m%d}"
+              chunks.append({
+                  "label": label,
+                  "from_date": cursor.strftime("%Y-%m-%d"),
+                  "to_date": next_cursor.strftime("%Y-%m-%d"),
+              })
+              cursor = next_cursor
+
+          print("matrix=" + json.dumps({"include": chunks}, separators=(",", ":")))
+          print(f"Prepared {len(chunks)} chunk(s)")
+          PY
+
+  backtest:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - name: Get repo files
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install basic packages
+        run: |
+          python -m pip install -U pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pandas numpy scipy pydantic structlog loguru ta requests aiohttp websockets python-dotenv pytest
+
+      - name: Filter CSV for this chunk
+        shell: bash
+        env:
+          CSV_PATH: ${{ inputs.csv_path }}
+          FILTERED_CSV: backtest_inputs/xauusd_${{ matrix.label }}.csv
+          FROM_DATE: ${{ matrix.from_date }}
+          TO_DATE: ${{ matrix.to_date }}
+        run: |
+          mkdir -p backtest_inputs
+          python - <<'PY'
+          import csv
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          source = Path(os.environ["CSV_PATH"])
+          target = Path(os.environ["FILTERED_CSV"])
+
+          def parse_dt(value: str) -> datetime:
+              text = str(value).strip()
+              if not text:
+                  raise ValueError("empty datetime")
+              if text.isdigit():
+                  return datetime.fromtimestamp(int(text), tz=timezone.utc)
+              text = text.replace("/", "-")
+              if len(text) >= 10 and text[4] == "." and text[7] == ".":
+                  text = text[:10].replace(".", "-") + text[10:]
+              parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+              return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+          start = parse_dt(os.environ["FROM_DATE"])
+          end = parse_dt(os.environ["TO_DATE"])
+          if not source.exists():
+              raise SystemExit(f"CSV not found: {source}")
+
+          with source.open("r", encoding="utf-8-sig", newline="") as handle:
+              first_line = handle.readline()
+              handle.seek(0)
+              first_cells = [cell.strip().lower() for cell in first_line.strip().split(",")]
+              has_header = any(cell in {"time", "timestamp", "datetime", "date"} for cell in first_cells)
+              if has_header:
+                  reader = csv.DictReader(handle)
+              else:
+                  reader = csv.DictReader(handle, fieldnames=["date", "clock", "open", "high", "low", "close", "volume"])
+
+              target.parent.mkdir(parents=True, exist_ok=True)
+              count = 0
+              first_time = None
+              last_time = None
+              with target.open("w", encoding="utf-8", newline="") as out:
+                  writer = csv.DictWriter(out, fieldnames=["time", "open", "high", "low", "close", "volume"])
+                  writer.writeheader()
+                  for row in reader:
+                      raw_time = row.get("time") or row.get("timestamp") or row.get("datetime")
+                      if not raw_time:
+                          date_part = row.get("date", "")
+                          clock_part = row.get("clock", "") or row.get("time", "")
+                          raw_time = f"{date_part} {clock_part}".strip()
+                      candle_time = parse_dt(raw_time)
+                      if not (start <= candle_time < end):
+                          continue
+                      cleaned = {
+                          "time": candle_time.isoformat(),
+                          "open": row.get("open", ""),
+                          "high": row.get("high", ""),
+                          "low": row.get("low", ""),
+                          "close": row.get("close", ""),
+                          "volume": row.get("volume", "0") or "0",
+                      }
+                      writer.writerow(cleaned)
+                      count += 1
+                      first_time = first_time or candle_time.isoformat()
+                      last_time = candle_time.isoformat()
+
+          print(f"chunk=${{ matrix.label }} rows={count} first={first_time} last={last_time}")
+          if count < 100:
+              raise SystemExit(f"Too few rows for chunk ${{ matrix.label }}: {count}. Check dates or CSV data.")
+          PY
+
+      - name: Run chunk backtest
+        shell: bash
+        env:
+          RELAX_ENTRY_DRIFT: ${{ inputs.relax_entry_drift }}
+        run: |
+          EXTRA_ARGS=""
+          if [ "$RELAX_ENTRY_DRIFT" = "true" ]; then
+            EXTRA_ARGS="--max-entry-drift-price -1 --max-entry-drift-risk-fraction 0"
+          fi
+
+          timeout 12m python scripts/run_ict_smc_backtest.py \
+            --source csv \
+            --symbol XAUUSD \
+            --from "${{ matrix.from_date }}" \
+            --to "${{ matrix.to_date }}" \
+            --csv-1m "backtest_inputs/xauusd_${{ matrix.label }}.csv" \
+            --spread-price 0.40 \
+            --slippage-price 0.10 \
+            --output-dir "backtest_outputs/${{ matrix.label }}" \
+            $EXTRA_ARGS
+
+      - name: Upload chunk report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fast_backtest_${{ matrix.label }}
+          path: |
+            backtest_outputs/${{ matrix.label }}/
+            backtest_inputs/xauusd_${{ matrix.label }}.csv
