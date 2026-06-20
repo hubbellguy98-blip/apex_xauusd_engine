@@ -187,6 +187,7 @@ Profiles live in `config/backtest_profiles.json`:
 - `strict_intraday_xauusd` requires stricter score/RR, exact killzone handling, 3R post-cost acceptance, and intraday time exits.
 - `session_filtered_experiment` focuses on the stronger NY Open and Silver Bullet AM windows without hardcoding those filters into live strategy code.
 - `v3_candidate_safety` is a sweep-only candidate profile with 1m setup/entry candles, London Open disabled, 3R post-cost acceptance, risk-vs-cost sanity checks, early-trap filtering, strict displacement verification, and generic deployment gates.
+- `v4_candidate_safety_2r` keeps the same safety logic as v3 but uses a 2R post-cost minimum and a fixed `[1, 1.5, 2]` target ladder for separate comparison.
 
 If a trade log contains sub-3R completed trades, no-killzone trades under a require-killzone profile, disabled killzones, or holds beyond the configured max hold, it was not strict-profile compliant. That usually means the wrong profile was run, an older commit was used, or the output lacks run provenance.
 
@@ -221,6 +222,7 @@ Profile override examples:
 .\.venv\Scripts\python.exe scripts\run_ict_smc_backtest.py --source mt5 --symbol GOLD.i# --from 2026-06-01 --to 2026-06-14 --profile broad_research --minimum-rr 2
 .\.venv\Scripts\python.exe scripts\run_ict_smc_backtest.py --source mt5 --symbol GOLD.i# --from 2026-06-01 --to 2026-06-14 --profile strict_intraday_xauusd --target-final-rr 6
 .\.venv\Scripts\python.exe scripts\run_ict_smc_backtest.py --source mt5 --symbol GOLD.i# --from 2026-06-01 --to 2026-06-14 --profile v3_candidate_safety
+.\.venv\Scripts\python.exe scripts\run_ict_smc_backtest.py --source mt5 --symbol GOLD.i# --from 2026-06-01 --to 2026-06-14 --profile v4_candidate_safety_2r
 ```
 
 Use `--allow-failed-deployment-gates` only for research. Do not treat a run with failed deployment gates as live-ready.
@@ -267,7 +269,7 @@ The analyzer also supports older CSV names such as `score`, `exit_reason`, `tp1`
 
 The v3 trade log was not compatible with `strict_intraday_xauusd`: it contained sub-3R trades, no-killzone trades, Silver Bullet PM trades, low-score trades, and holds beyond 180 minutes. The follow-up `v3_candidate_safety` diagnostics also showed that profile-like results can still be unsafe when every completed trade has executable post-cost RR below 3R.
 
-The engine now records run provenance in every row, normalizes selector/generator profile config through one helper, and applies generic deployment gates to `v3_candidate_safety` as well as strict profiles. Shadow/demo runs default to `v3_candidate_safety` through `APEX_SELECTOR_PROFILE` or the demo runner `--profile` argument, but this does not make the system live-ready. VPS deployment still waits for a positive deployment-gated backtest with enough completed trades and no gate errors.
+The engine now records run provenance in every row, normalizes selector/generator profile config through one helper, and applies generic deployment gates to safety profiles as well as strict profiles. Shadow/demo runs default to `v3_candidate_safety`, and can select `v4_candidate_safety_2r` through `APEX_SELECTOR_PROFILE` or the demo runner `--profile` argument. This does not make the system live-ready. VPS deployment still waits for a positive deployment-gated backtest with enough completed trades and no gate errors.
 
 ## Final Principle
 

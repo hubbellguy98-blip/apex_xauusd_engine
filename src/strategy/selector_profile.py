@@ -65,6 +65,7 @@ def normalize_selector_profile(profile: Mapping[str, Any]) -> dict[str, Any]:
         "cost_adjusted_target_buffer_rr": float(profile.get("cost_adjusted_target_buffer_rr", 0.0)),
         "spread_price": float(profile.get("spread_price", 0.0)),
         "slippage_price": float(profile.get("slippage_price", 0.0)),
+        "target_ladder": dict(profile.get("target_ladder", {}) or {}),
         "deployment_gate": dict(profile.get("deployment_gate", {}) or {}),
     }
     if "body_to_range_ratio" in thresholds:

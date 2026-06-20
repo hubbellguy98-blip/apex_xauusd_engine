@@ -1329,10 +1329,11 @@ def _calibrated_score(trade: Mapping[str, Any]) -> float | None:
     score = _optional_float(trade.get("confidence_score") or trade.get("score") or trade.get("setup_score"))
     if score is None:
         return None
+    minimum_rr = _optional_float(trade.get("minimum_rr")) or 3.0
     penalty = 0.0
     if str(trade.get("killzone_name") or "").lower() == "london open":
         penalty += 8.0
-    if _optional_float(trade.get("post_cost_rr")) is not None and (_optional_float(trade.get("post_cost_rr")) or 0.0) < 3.0:
+    if _optional_float(trade.get("post_cost_rr")) is not None and (_optional_float(trade.get("post_cost_rr")) or 0.0) < minimum_rr:
         penalty += 10.0
     if (_optional_float(trade.get("drift_risk_fraction")) or 0.0) > 0.15:
         penalty += 5.0

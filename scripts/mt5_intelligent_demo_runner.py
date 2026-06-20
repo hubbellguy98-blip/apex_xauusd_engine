@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
 
 from src.core.domain.execution_models import OrderRequest, OrderStatus
 from src.core.domain.constants import OrderDirection
-from src.execution.rr_math import calculate_post_cost_rr, risk_to_cost_ratio
+from src.execution.rr_math import calculate_post_cost_rr, calculate_raw_rr, risk_to_cost_ratio
 from src.core.events.event_bus import EventBus
 from src.execution.position_tracker import (
     InstitutionalTradeLifecycleManager,
@@ -30,13 +30,13 @@ from src.execution.position_sizer import InstitutionalPositionSizer
 from src.execution.pre_submission_guard import LiveQuoteActivityMonitor
 from src.execution.risk_firewall import RiskManagementOrchestrator
 from src.execution.stop_loss_engine import DynamicStructuralStopEngine
-from src.infrastructure.broker.mt5_config import load_mt5_config
+from src.infrastructure.broker.mt5_config import load_mt5_config, read_env_file
 from src.infrastructure.broker.mt5_gateway import MT5BrokerGateway
 from src.infrastructure.telemetry.telegram_reporting import TelegramReportingService
 from src.strategy.confirmation_orchestrator import TradeConfirmationOrchestrator
 from src.strategy.scoring_matrix import TradeScoringOrchestrator
 from src.strategy.setup_detector import MarketSetupOrchestrator
-from src.strategy.selector_profile import DEFAULT_SHADOW_PROFILE, load_selector_profile, normalize_selector_profile
+from src.strategy.selector_profile import DEFAULT_SHADOW_PROFILE, load_selector_profile, normalize_selector_profile, profile_hash
 from src.strategy.state_manager import CentralRuntimeStateManager
 
 EXECUTION_CONFIRMATION = "ENABLE_ONE_INTELLIGENT_DEMO_TRADE"
@@ -55,6 +55,40 @@ def resolve_runner_mode(execute_one_demo_trade: bool, manage_open_demo_trade: bo
     if execute_one_demo_trade:
         return "ONE_DEMO_EXECUTION"
     return "SHADOW_ONLY_NO_ORDER"
+
+
+def _selected_profile_name(explicit_profile: str | None = None) -> str:
+    if explicit_profile:
+        return explicit_profile
+    env_values = read_env_file(ROOT / ".env")
+    return os.getenv("APEX_SELECTOR_PROFILE") or env_values.get("APEX_SELECTOR_PROFILE") or DEFAULT_SHADOW_PROFILE
+
+
+def _execution_rr_snapshot(setup, tick, selected_profile: dict, selector_config: dict) -> dict[str, float]:
+    expected_fill = tick.ask if setup.direction is OrderDirection.BUY else tick.bid
+    raw_rr = calculate_raw_rr(setup.direction.value, setup.entry_price, setup.stop_loss, setup.take_profit)
+    estimated_post_cost_rr = calculate_post_cost_rr(
+        setup.direction.value,
+        expected_fill,
+        setup.stop_loss,
+        setup.take_profit,
+        tick.spread,
+        float(selected_profile.get("slippage_price", 0.0)),
+    )
+    ratio = risk_to_cost_ratio(
+        expected_fill,
+        setup.stop_loss,
+        tick.spread,
+        float(selected_profile.get("slippage_price", 0.0)),
+    )
+    return {
+        "expected_fill": expected_fill,
+        "raw_rr": raw_rr,
+        "estimated_post_cost_rr": estimated_post_cost_rr,
+        "risk_to_cost_ratio": ratio,
+        "minimum_rr": float(selector_config.get("minimum_rr", selected_profile.get("minimum_rr", 3.0))),
+        "minimum_risk_to_cost_ratio": float(selector_config.get("minimum_risk_to_cost_ratio", 0.0)),
+    }
 
 
 async def synchronize_positions(state_manager: CentralRuntimeStateManager, gateway: MT5BrokerGateway) -> list:
@@ -172,9 +206,10 @@ async def run_strategy(
 ) -> int:
     configured = load_mt5_config(ROOT / ".env")
     mode = resolve_runner_mode(execute_one_demo_trade, manage_open_demo_trade)
-    selected_profile_name = profile_name or os.getenv("APEX_SELECTOR_PROFILE") or DEFAULT_SHADOW_PROFILE
+    selected_profile_name = _selected_profile_name(profile_name)
     selected_profile = load_selector_profile(selected_profile_name)
     selector_config = normalize_selector_profile(selected_profile)
+    selected_profile_hash = profile_hash(selected_profile)
     try:
         reporting = TelegramReportingService.from_env_file(ROOT / ".env", ROOT)
     except RuntimeError as exc:
@@ -228,7 +263,10 @@ async def run_strategy(
         poll_seconds=poll_seconds,
         warmup_bars=warmup_bars,
         selector_profile=selected_profile_name,
+        selector_profile_hash=selected_profile_hash,
         selector_config_hash=detector.diagnostic_snapshot["selector_config_hash"],
+        minimum_rr=selector_config.get("minimum_rr"),
+        target_ladder=selected_profile.get("target_ladder", {}),
     )
 
     await state_manager.bootstrap()
@@ -290,7 +328,10 @@ async def run_strategy(
         print(f"open_gold_positions_at_start={len(existing_positions)}")
         print(f"startup_reconciliation={reconciliation_status}")
         print(f"selector_profile={selected_profile_name}")
+        print(f"selector_profile_hash={selected_profile_hash}")
         print(f"selector_config_hash={detector.diagnostic_snapshot['selector_config_hash']}")
+        print(f"selector_minimum_rr={selector_config.get('minimum_rr')}")
+        print(f"selector_target_ladder={selected_profile.get('target_ladder', {})}")
         print(f"historical_bars_processed={len(histories['1m'])}")
         print(f"structure_pivots={detector.tracked_structural_pivots}")
         print(f"historical_sweeps_cleared={detector.warmup_sweeps_cleared}")
@@ -309,7 +350,10 @@ async def run_strategy(
             open_positions_at_start=len(existing_positions),
             startup_reconciliation=reconciliation_status,
             selector_profile=selected_profile_name,
+            selector_profile_hash=selected_profile_hash,
             selector_config_hash=detector.diagnostic_snapshot["selector_config_hash"],
+            minimum_rr=selector_config.get("minimum_rr"),
+            target_ladder=selected_profile.get("target_ladder", {}),
             historical_bars_processed=len(histories["1m"]),
             structure_pivots=detector.tracked_structural_pivots,
             historical_sweeps_cleared=detector.warmup_sweeps_cleared,
@@ -500,23 +544,12 @@ async def run_strategy(
                             reasons=["RISK_REJECTED_AFTER_STOP_HARDENING", *risk_snapshot.rejection_reasons],
                         )
                         continue
-                expected_fill = tick.ask if setup.direction is OrderDirection.BUY else tick.bid
-                expected_post_cost_rr = calculate_post_cost_rr(
-                    setup.direction.value,
-                    expected_fill,
-                    setup.stop_loss,
-                    setup.take_profit,
-                    tick.spread,
-                    float(selected_profile.get("slippage_price", 0.0)),
-                )
-                risk_cost_ratio = risk_to_cost_ratio(
-                    expected_fill,
-                    setup.stop_loss,
-                    tick.spread,
-                    float(selected_profile.get("slippage_price", 0.0)),
-                )
-                minimum_rr = float(selector_config.get("minimum_rr", selected_profile.get("minimum_rr", 3.0)))
-                minimum_risk_cost = float(selector_config.get("minimum_risk_to_cost_ratio", 0.0))
+                rr_snapshot = _execution_rr_snapshot(setup, tick, selected_profile, selector_config)
+                raw_rr = rr_snapshot["raw_rr"]
+                expected_post_cost_rr = rr_snapshot["estimated_post_cost_rr"]
+                risk_cost_ratio = rr_snapshot["risk_to_cost_ratio"]
+                minimum_rr = rr_snapshot["minimum_rr"]
+                minimum_risk_cost = rr_snapshot["minimum_risk_to_cost_ratio"]
                 if risk_cost_ratio < minimum_risk_cost:
                     print("candidate_status=BLOCKED_RISK_TOO_SMALL_VS_COST")
                     reporting.record(
@@ -527,8 +560,10 @@ async def run_strategy(
                         setup_id=setup.id,
                         direction=setup.direction.value,
                         estimated_post_cost_rr=expected_post_cost_rr,
+                        raw_rr=raw_rr,
                         risk_to_cost_ratio=risk_cost_ratio,
                         minimum_risk_to_cost_ratio=minimum_risk_cost,
+                        target_ladder=selected_profile.get("target_ladder", {}),
                         reasons=["risk_too_small_vs_cost"],
                     )
                     continue
@@ -542,7 +577,9 @@ async def run_strategy(
                         setup_id=setup.id,
                         direction=setup.direction.value,
                         estimated_post_cost_rr=expected_post_cost_rr,
+                        raw_rr=raw_rr,
                         minimum_rr=minimum_rr,
+                        target_ladder=selected_profile.get("target_ladder", {}),
                         reasons=["post_cost_rr_below_minimum"],
                     )
                     continue
@@ -550,6 +587,7 @@ async def run_strategy(
                 print(f"qualified_direction={setup.direction.value}")
                 print(f"qualified_score={ranked.score_breakdown.normalized_final_score:.2f}")
                 print(f"qualified_lots={risk_snapshot.sizing.calculated_lots:.2f}")
+                print(f"raw_rr={raw_rr:.2f}")
                 print(f"estimated_post_cost_rr={expected_post_cost_rr:.2f}")
                 await reporting.record_and_notify(
                     "RISK_APPROVED",
@@ -565,8 +603,11 @@ async def run_strategy(
                     stop_loss=setup.stop_loss,
                     take_profit=setup.take_profit,
                     estimated_rr=setup.estimated_rr,
+                    raw_rr=raw_rr,
                     estimated_post_cost_rr=expected_post_cost_rr,
                     risk_to_cost_ratio=risk_cost_ratio,
+                    minimum_rr=minimum_rr,
+                    target_ladder=selected_profile.get("target_ladder", {}),
                     confidence_score=setup.confidence_score,
                     final_score=ranked.score_breakdown.normalized_final_score,
                     calculated_lots=risk_snapshot.sizing.calculated_lots,

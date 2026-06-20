@@ -272,11 +272,11 @@ def test_analyze_trade_log_outputs_group_metrics(tmp_path) -> None:
         ],
     )
 
-    analysis = analyze_trade_log(path)
+    analysis = analyze_trade_log(path, minimum_rr=3.0)
 
     assert analysis["overall"]["trades"] == 2
     assert analysis["by_killzone"]["NY Open"]["net_R"] == 2.0
-    assert "post_cost_rr_below_3_present" in analysis["warnings"]
+    assert "post_cost_rr_below_profile_minimum" in analysis["warnings"]
     assert "duration_outliers_present" in analysis["warnings"]
 
 
@@ -329,3 +329,37 @@ def test_analyzer_supports_legacy_score_and_column_names(tmp_path) -> None:
     assert analysis["by_killzone"]["NY Open"]["trades"] == 1
     assert "legacy_or_unprofiled_trade_log" in analysis["warnings"]
     assert analysis["early_exit_0_15m"]["trades"] == 1
+
+
+def test_analyzer_uses_cli_minimum_rr_for_legacy_two_r_logs(tmp_path) -> None:
+    path = tmp_path / "legacy_2r.csv"
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["trade_id", "realized_R", "post_cost_rr"])
+        writer.writeheader()
+        writer.writerow({"trade_id": "LOW", "realized_R": -1, "post_cost_rr": 1.95})
+        writer.writerow({"trade_id": "OK", "realized_R": 1, "post_cost_rr": 2.1})
+
+    analysis = analyze_trade_log(path, minimum_rr=2.0)
+
+    assert analysis["minimum_rr"] == 2.0
+    assert analysis["strict_profile_violations"]["post_cost_rr_below_profile_minimum"] == ["LOW"]
+    assert analysis["post_cost_rr_distribution"]["below_profile_minimum_count"] == 1
+    assert analysis["post_cost_rr_distribution"]["buckets"]["<2R"] == 1
+    assert analysis["post_cost_rr_distribution"]["buckets"]["2R-2.49R"] == 1
+    assert "post_cost_rr_below_profile_minimum" in analysis["warnings"]
+
+
+def test_two_r_deployment_gate_rejects_below_and_accepts_above_profile_minimum() -> None:
+    profile = {
+        "profile_name": "v4_candidate_safety_2r",
+        "minimum_rr": 2.0,
+        "session_filters": {},
+        "management": {"max_hold_minutes": 180},
+        "deployment_gate": {"enforce": True, "require_post_cost_rr": True},
+    }
+
+    rejected = _strict_profile_gate_errors({"completed_trade_log": [{"trade_id": "LOW", "post_cost_rr": 1.99}]}, profile)
+    accepted = _strict_profile_gate_errors({"completed_trade_log": [{"trade_id": "OK", "post_cost_rr": 2.01}]}, profile)
+
+    assert any(error.startswith("deployment_gate_post_cost_rr_below_minimum:LOW") for error in rejected)
+    assert accepted == []

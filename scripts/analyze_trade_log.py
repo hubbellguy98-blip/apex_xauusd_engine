@@ -32,11 +32,13 @@ ALIASES = {
 }
 
 
-def analyze_trade_log(path: Path) -> dict[str, Any]:
+def analyze_trade_log(path: Path, minimum_rr: float | None = None) -> dict[str, Any]:
     rows, headers = _read_rows(path)
     values = [_float(row.get("realized_R")) or 0.0 for row in rows]
+    profile_minimum_rr = _profile_minimum_rr(rows, minimum_rr)
     return {
         "source": str(path),
+        "minimum_rr": profile_minimum_rr,
         "overall": _metrics(rows),
         "by_direction": _group_metrics(rows, "direction"),
         "by_session": _group_metrics(rows, "session_name"),
@@ -48,10 +50,10 @@ def analyze_trade_log(path: Path) -> dict[str, Any]:
         "score_calibration": _score_calibration(rows),
         "by_duration_bucket": _duration_bucket_metrics(rows),
         "early_exit_0_15m": _metrics([row for row in rows if (_float(row.get("duration_min")) or 0.0) <= 15.0]),
-        "post_cost_rr_distribution": _rr_distribution(rows),
+        "post_cost_rr_distribution": _rr_distribution(rows, profile_minimum_rr),
         "displacement_breakdown": _displacement_metrics(rows),
         "profile_compliance": _profile_compliance(rows, headers),
-        "strict_profile_violations": _strict_profile_violations(rows),
+        "strict_profile_violations": _strict_profile_violations(rows, profile_minimum_rr),
         "top_losing_combinations": _top_losing_combinations(rows),
         "exclusion_simulations": {
             "exclude_london_open": _exclude_simulation(rows, lambda row: str(row.get("killzone_name") or "").lower() == "london open"),
@@ -61,7 +63,7 @@ def analyze_trade_log(path: Path) -> dict[str, Any]:
         "max_drawdown_R": _max_drawdown(values),
         "max_win_streak": _streak(values, positive=True),
         "max_loss_streak": _streak(values, positive=False),
-        "warnings": _warnings(rows, headers),
+        "warnings": _warnings(rows, headers, profile_minimum_rr),
     }
 
 
@@ -172,12 +174,20 @@ def _duration_bucket_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any
     return {name: _metrics(items) for name, items in sorted(groups.items())}
 
 
-def _rr_distribution(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _rr_distribution(rows: Sequence[Mapping[str, Any]], minimum_rr: float | None = None) -> dict[str, Any]:
     values = [value for value in (_float(row.get("post_cost_rr")) for row in rows) if value is not None]
     values_sorted = sorted(values)
     return {
         "count": len(values),
-        "below_3_count": sum(1 for value in values if value < 3.0),
+        "below_profile_minimum_count": (
+            sum(1 for value in values if value < minimum_rr) if minimum_rr is not None else None
+        ),
+        "buckets": {
+            "<2R": sum(1 for value in values if value < 2.0),
+            "2R-2.49R": sum(1 for value in values if 2.0 <= value < 2.5),
+            "2.5R-2.99R": sum(1 for value in values if 2.5 <= value < 3.0),
+            "3R+": sum(1 for value in values if value >= 3.0),
+        },
         "average": round(mean(values), 5) if values else None,
         "min": values_sorted[0] if values_sorted else None,
         "max": values_sorted[-1] if values_sorted else None,
@@ -210,11 +220,15 @@ def _profile_compliance(rows: Sequence[Mapping[str, Any]], headers: set[str]) ->
     }
 
 
-def _strict_profile_violations(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _strict_profile_violations(rows: Sequence[Mapping[str, Any]], minimum_rr: float | None) -> dict[str, Any]:
     strict_rows = [row for row in rows if row.get("profile_name") == "strict_intraday_xauusd"]
     target = strict_rows or rows
     return {
-        "post_cost_rr_below_3": [row.get("trade_id") for row in target if (_float(row.get("post_cost_rr")) or 0.0) < 3.0],
+        "post_cost_rr_below_profile_minimum": [
+            row.get("trade_id")
+            for row in target
+            if minimum_rr is not None and (_float(row.get("post_cost_rr")) or 0.0) < minimum_rr
+        ],
         "no_killzone": [row.get("trade_id") for row in strict_rows if str(row.get("killzone_active")).lower() not in {"true", "1"}],
         "disabled_killzone": [row.get("trade_id") for row in strict_rows if str(row.get("killzone_name") or "").lower() == "silver bullet pm"],
         "duration_over_180": [row.get("trade_id") for row in strict_rows if (_float(row.get("duration_min")) or 0.0) > 181.0],
@@ -236,7 +250,7 @@ def _exclude_simulation(rows: Sequence[Mapping[str, Any]], predicate: Callable[[
     return {"kept": _metrics(kept), "excluded": _metrics(excluded)}
 
 
-def _warnings(rows: Sequence[Mapping[str, Any]], headers: set[str]) -> list[str]:
+def _warnings(rows: Sequence[Mapping[str, Any]], headers: set[str], minimum_rr: float | None) -> list[str]:
     warnings: list[str] = []
     overall = _metrics(rows)
     if "profile_name" not in headers:
@@ -245,13 +259,24 @@ def _warnings(rows: Sequence[Mapping[str, Any]], headers: set[str]) -> list[str]
         warnings.append("profit_factor_below_1_2")
     if overall["expectancy_R"] <= 0:
         warnings.append("expectancy_not_positive")
-    if any((_float(row.get("post_cost_rr")) or 0.0) < 3.0 for row in rows):
-        warnings.append("post_cost_rr_below_3_present")
+    if minimum_rr is not None and any((_float(row.get("post_cost_rr")) or 0.0) < minimum_rr for row in rows):
+        warnings.append("post_cost_rr_below_profile_minimum")
     if any((_float(row.get("duration_min")) or 0.0) > 180 for row in rows):
         warnings.append("duration_outliers_present")
     if _score_calibration(rows)["non_monotonic"]:
         warnings.append("score_buckets_non_monotonic")
     return warnings
+
+
+def _profile_minimum_rr(rows: Sequence[Mapping[str, Any]], override: float | None) -> float | None:
+    if override is not None:
+        return float(override)
+    values = [
+        value
+        for value in (_float(row.get("minimum_rr") or row.get("profile_minimum_rr")) for row in rows)
+        if value is not None
+    ]
+    return values[0] if values else None
 
 
 def _markdown(analysis: Mapping[str, Any]) -> str:
@@ -352,13 +377,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Analyze an Apex backtest trade CSV.")
     parser.add_argument("trade_csv")
     parser.add_argument("--output-prefix")
+    parser.add_argument("--minimum-rr", type=float, help="Profile minimum post-cost RR for legacy CSVs without a minimum_rr column.")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     path = Path(args.trade_csv)
-    analysis = analyze_trade_log(path)
+    analysis = analyze_trade_log(path, minimum_rr=args.minimum_rr)
     prefix = Path(args.output_prefix) if args.output_prefix else path.with_name(f"{path.stem}_analysis")
     outputs = write_outputs(analysis, prefix)
     print(f"analysis_json={outputs['json']}")

@@ -168,5 +168,68 @@
       "require_post_cost_rr": true,
       "require_profile_metadata": true
     }
+  },
+  "v4_candidate_safety_2r": {
+    "description": "Candidate safety profile derived from v3 diagnostics: sweep-only, 2R post-cost minimum, London Open disabled, and early-trap/displacement safety gates.",
+    "enabled_strategies": ["sweep_mss_fvg"],
+    "disabled_strategies": [],
+    "minimum_score": 70.0,
+    "minimum_rr": 2.0,
+    "strategy_min_rr": {
+      "sweep_mss_fvg": 2.0
+    },
+    "strategy_min_scores": {},
+    "setup_timeframe": "1m",
+    "entry_timeframe": "1m",
+    "bias_timeframe": "1h",
+    "entry_mode": "balanced",
+    "minimum_risk_to_cost_ratio": 4.0,
+    "cost_adjusted_target_buffer_rr": 0.0,
+    "session_filters": {
+      "require_killzone": false,
+      "disabled_sessions": [],
+      "disabled_killzones": ["London Open"]
+    },
+    "management": {
+      "same_candle_policy": "conservative",
+      "max_hold_minutes": 180,
+      "close_at_session_end": true,
+      "friday_cutoff_utc": "20:00",
+      "stale_after_no_target_minutes": 90
+    },
+    "spread_price": 0.40,
+    "slippage_price": 0.10,
+    "target_ladder": {
+      "mode": "fixed_rr",
+      "final_rr": 2.0,
+      "milestones": [1, 1.5, 2],
+      "close_percents": [0.30, 0.30, 0.40],
+      "experimental_close_percents": [[0.33, 0.33, 0.34], [0.20, 0.30, 0.50]],
+      "experimental_move_stop_to_be_after_target_index": [1, 2]
+    },
+    "move_stop_to_be_after_target_index": 1,
+    "breakeven_buffer_price": 0.0,
+    "breakeven_after_rr": null,
+    "strict_displacement": true,
+    "displacement_mode": "reject_weak_or_unverified",
+    "displacement_thresholds": {
+      "body_to_range_ratio": 0.60,
+      "range_to_atr_ratio": 1.20,
+      "close_position_score": 0.75
+    },
+    "early_trap_filter": {
+      "enabled": true,
+      "min_confirmation_candles_after_retest": 1,
+      "max_entry_drift_risk_fraction": 0.15,
+      "reject_if_stop_inside_recent_noise": true,
+      "reject_if_retest_candle_closes_against_direction": true,
+      "reject_if_no_followthrough_after_retest": true
+    },
+    "deployment_gate": {
+      "enforce": true,
+      "minimum_completed_trades": 30,
+      "require_post_cost_rr": true,
+      "require_profile_metadata": true
+    }
   }
 }
