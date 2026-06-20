@@ -19,6 +19,15 @@ on:
         description: "Days per chunk. Use 1 for fastest/reliable mobile testing."
         required: true
         default: "1"
+      profile:
+        description: "Backtest profile from config/backtest_profiles.json"
+        required: true
+        default: "strict_intraday_xauusd"
+        type: choice
+        options:
+          - "broad_research"
+          - "strict_intraday_xauusd"
+          - "session_filtered_experiment"
       relax_entry_drift:
         description: "Diagnostic only: allow far market fills"
         required: true
@@ -46,7 +55,7 @@ jobs:
           TO_DATE: ${{ inputs.to_date }}
           CHUNK_DAYS: ${{ inputs.chunk_days }}
         run: |
-          python - <<'PY' >> "$GITHUB_OUTPUT"
+          python - <<'PY'
           import json
           import os
           from datetime import datetime, timedelta, timezone
@@ -76,7 +85,9 @@ jobs:
               })
               cursor = next_cursor
 
-          print("matrix=" + json.dumps({"include": chunks}, separators=(",", ":")))
+          matrix = json.dumps({"include": chunks}, separators=(",", ":"))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"matrix={matrix}\n")
           print(f"Prepared {len(chunks)} chunk(s)")
           PY
 
@@ -187,6 +198,7 @@ jobs:
         shell: bash
         env:
           RELAX_ENTRY_DRIFT: ${{ inputs.relax_entry_drift }}
+          PROFILE: ${{ inputs.profile }}
         run: |
           EXTRA_ARGS=""
           if [ "$RELAX_ENTRY_DRIFT" = "true" ]; then
@@ -199,6 +211,7 @@ jobs:
             --from "${{ matrix.from_date }}" \
             --to "${{ matrix.to_date }}" \
             --csv-1m "backtest_inputs/xauusd_${{ matrix.label }}.csv" \
+            --profile "$PROFILE" \
             --spread-price 0.40 \
             --slippage-price 0.10 \
             --output-dir "backtest_outputs/${{ matrix.label }}" \
