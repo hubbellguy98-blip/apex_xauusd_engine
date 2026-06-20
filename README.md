@@ -70,6 +70,8 @@ python scripts/analyze_trade_log.py .\backtest_outputs\ict_smc_backtest_mt5_YYYY
 
 The JSON/Markdown reports include git SHA, branch, command args, active profile, selector config, spread/slippage, symbol, source, date range, timeframe counts, diagnostics, and deployment-readiness warnings. The strict intraday profile requires post-cost final RR of at least 3R and supports a configurable 1:3 or 1:6 target ladder.
 
+Every new trade CSV row also includes the profile name, git SHA/branch, minimum RR/score, active profile hash, selector config hash, and run ID. Strict-profile runs fail by default if completed trades violate the configured RR, killzone, disabled-killzone, or max-hold gates. Use `--allow-failed-deployment-gates` only for research.
+
 ## Runtime Notes
 
 The live engine expects environment values such as `APEX_TWELVEDATA_KEY` and `DATABASE_URL`. For development, keep those in a local `.env` file and do not commit secrets.

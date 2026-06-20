@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import logging
 import subprocess
@@ -245,6 +246,10 @@ class FullSystemICTSMCBacktester:
                     setup = hardened.setup
 
             signal = _setup_to_market_signal(setup, selected, candle.end_time, self.symbol, config, context)
+            trap_reason = _early_trap_filter_rejection(signal, context, config)
+            if trap_reason:
+                skipped_log.append(record_skipped_setup(signal, trap_reason))
+                continue
             pending_orders.append(place_pending_order(signal, {"order_type": signal.get("order_type")}))
             signal_log.append(signal)
             strategy_counter[selected.definition.key] += 1
@@ -256,6 +261,7 @@ class FullSystemICTSMCBacktester:
                 trade_log.append(record_trade(_close_position_at_end(position, final_candle)))
                 open_positions.remove(position)
 
+        trade_log = _annotate_trades_with_run_metadata(trade_log, config)
         completed_trade_log, mark_to_market_trade_log = _split_completed_and_mark_to_market(trade_log)
         report = generate_backtest_report(
             completed_trade_log,
@@ -571,10 +577,12 @@ def save_outputs(result: Mapping[str, Any], output_dir: Path, label: str) -> dic
     json_path = output_dir / f"{stem}.json"
     md_path = output_dir / f"{stem}.md"
     trades_path = output_dir / f"{stem}_trades.csv"
+    manifest_path = output_dir / f"{stem}_run_manifest.json"
     json_path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
     md_path.write_text(_markdown_report(result), encoding="utf-8")
     _write_trade_csv(trades_path, result.get("trade_log", []))
-    return {"json": json_path, "markdown": md_path, "trades_csv": trades_path}
+    manifest_path.write_text(json.dumps(result.get("run_manifest", {}), indent=2, default=str), encoding="utf-8")
+    return {"json": json_path, "markdown": md_path, "trades_csv": trades_path, "run_manifest": manifest_path}
 
 
 def _markdown_report(result: Mapping[str, Any]) -> str:
@@ -638,6 +646,14 @@ def _markdown_report(result: Mapping[str, Any]) -> str:
 def _write_trade_csv(path: Path, trades: Sequence[Mapping[str, Any]]) -> None:
     fields = [
         "trade_id",
+        "run_id",
+        "profile_name",
+        "git_commit",
+        "git_branch",
+        "minimum_rr",
+        "minimum_score",
+        "selector_config_hash",
+        "active_profile_hash",
         "strategy",
         "symbol",
         "direction",
@@ -659,6 +675,8 @@ def _write_trade_csv(path: Path, trades: Sequence[Mapping[str, Any]]) -> None:
         "estimated_rr",
         "post_cost_rr",
         "confidence_score",
+        "original_score",
+        "calibrated_score",
         "realized_R",
         "result",
         "final_exit_reason",
@@ -885,6 +903,60 @@ def _post_cost_rr(order: Mapping[str, Any], fill: Mapping[str, Any]) -> float:
     direction = str(order.get("direction", "")).upper()
     reward = final_target - fill_price if direction == OrderDirection.BUY.value else fill_price - final_target
     return round(max(0.0, reward / risk), 5)
+
+
+def _early_trap_filter_rejection(signal: Mapping[str, Any], context: Mapping[str, Any], config: Mapping[str, Any]) -> str | None:
+    cfg = dict((config.get("active_profile", {}) or {}).get("early_trap_filter", {}) or config.get("early_trap_filter", {}) or {})
+    if not bool(cfg.get("enabled", False)):
+        return None
+    candles = list(context.get("candles", []) or [])
+    if len(candles) < 2:
+        return "early_trap_filter_failed"
+    retest = candles[-2]
+    confirmation = candles[-1]
+    direction = str(signal.get("direction", "")).upper()
+    entry = _optional_float(signal.get("entry_price"))
+    stop = _optional_float(signal.get("stop_loss"))
+    if entry is None or stop is None:
+        return "early_trap_filter_failed"
+
+    risk = abs(entry - stop)
+    midpoint = (float(retest.get("high", entry)) + float(retest.get("low", entry))) / 2.0
+    bullish_body = float(confirmation.get("close", 0.0)) > float(confirmation.get("open", 0.0))
+    bearish_body = float(confirmation.get("close", 0.0)) < float(confirmation.get("open", 0.0))
+    if direction == OrderDirection.BUY.value:
+        confirmation_valid = (
+            float(confirmation.get("close", 0.0)) > float(retest.get("high", 0.0))
+            or (float(confirmation.get("close", 0.0)) > midpoint and bullish_body)
+        )
+        adverse = risk > 0 and float(confirmation.get("low", entry)) <= stop + risk * 0.15
+        retest_against = float(retest.get("close", 0.0)) < float(retest.get("open", 0.0))
+    elif direction == OrderDirection.SELL.value:
+        confirmation_valid = (
+            float(confirmation.get("close", 0.0)) < float(retest.get("low", 0.0))
+            or (float(confirmation.get("close", 0.0)) < midpoint and bearish_body)
+        )
+        adverse = risk > 0 and float(confirmation.get("high", entry)) >= stop - risk * 0.15
+        retest_against = float(retest.get("close", 0.0)) > float(retest.get("open", 0.0))
+    else:
+        return "early_trap_filter_failed"
+
+    diagnostics = {
+        "retest_index": retest.get("index"),
+        "confirmation_index": confirmation.get("index"),
+        "confirmation_delay_candles": 1,
+        "confirmation_close_valid": confirmation_valid,
+        "early_trap_risk": adverse or retest_against,
+    }
+    if isinstance(signal.get("setup_context"), Mapping):
+        signal["setup_context"]["early_trap_diagnostics"] = diagnostics  # type: ignore[index]
+    if adverse:
+        return "adverse_move_before_confirmation"
+    if bool(cfg.get("reject_if_retest_candle_closes_against_direction", True)) and retest_against:
+        return "early_trap_filter_failed"
+    if bool(cfg.get("reject_if_no_followthrough_after_retest", True)) and not confirmation_valid:
+        return "no_followthrough_after_retest"
+    return None
 
 
 def _extract_displacement_diagnostics(signal: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -1157,6 +1229,134 @@ def _optional_float(value: Any) -> float | None:
         return None
 
 
+def _stable_hash(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _run_id(manifest: Mapping[str, Any]) -> str:
+    return f"BT_{_stable_hash(manifest)}"
+
+
+def _build_run_manifest(
+    *,
+    args: argparse.Namespace,
+    profile: Mapping[str, Any],
+    git: Mapping[str, Any],
+    inputs: BacktestInputs,
+    generated_at: datetime,
+) -> dict[str, Any]:
+    return {
+        "generated_at": generated_at.isoformat(),
+        "command_args": vars(args),
+        "profile_path": profile.get("profile_path"),
+        "resolved_profile": dict(profile),
+        "git_commit": git.get("commit"),
+        "git_branch": git.get("branch"),
+        "source": inputs.source,
+        "symbol": inputs.symbol,
+        "from": args.from_date,
+        "to": args.to_date,
+        "spread_price": profile.get("spread_price"),
+        "slippage_price": profile.get("slippage_price"),
+        "timeframe_counts": {key: len(value) for key, value in inputs.candles_by_timeframe.items()},
+    }
+
+
+def _annotate_trades_with_run_metadata(trades: Sequence[Mapping[str, Any]], config: Mapping[str, Any]) -> list[dict[str, Any]]:
+    manifest = dict(config.get("run_manifest", {}) or {})
+    profile = dict(config.get("active_profile", {}) or {})
+    selector = dict(config.get("selector", {}) or {})
+    git = dict(config.get("git", {}) or {})
+    run_id = str(config.get("run_id") or manifest.get("run_id") or _run_id(manifest))
+    active_profile_hash = str(config.get("active_profile_hash") or _stable_hash(profile))
+    selector_config_hash = str(config.get("selector_config_hash") or _stable_hash(selector))
+    annotated: list[dict[str, Any]] = []
+    for trade in trades:
+        row = dict(trade)
+        score = row.get("confidence_score") or row.get("score") or row.get("setup_score")
+        row.setdefault("run_id", run_id)
+        row.setdefault("profile_name", config.get("profile_name") or profile.get("profile_name"))
+        row.setdefault("git_commit", git.get("commit") or manifest.get("git_commit"))
+        row.setdefault("git_branch", git.get("branch") or manifest.get("git_branch"))
+        row.setdefault("minimum_rr", selector.get("minimum_rr") or profile.get("minimum_rr"))
+        row.setdefault("minimum_score", selector.get("minimum_score") or profile.get("minimum_score"))
+        row.setdefault("selector_config_hash", selector_config_hash)
+        row.setdefault("active_profile_hash", active_profile_hash)
+        row.setdefault("original_score", score)
+        row.setdefault("calibrated_score", _calibrated_score(row))
+        annotated.append(row)
+    return annotated
+
+
+def _calibrated_score(trade: Mapping[str, Any]) -> float | None:
+    score = _optional_float(trade.get("confidence_score") or trade.get("score") or trade.get("setup_score"))
+    if score is None:
+        return None
+    penalty = 0.0
+    if str(trade.get("killzone_name") or "").lower() == "london open":
+        penalty += 8.0
+    if _optional_float(trade.get("post_cost_rr")) is not None and (_optional_float(trade.get("post_cost_rr")) or 0.0) < 3.0:
+        penalty += 10.0
+    if (_optional_float(trade.get("drift_risk_fraction")) or 0.0) > 0.15:
+        penalty += 5.0
+    if "weak" in str(trade.get("displacement_diagnostics") or "").lower():
+        penalty += 5.0
+    if (_optional_float(trade.get("duration_min")) or 9999.0) <= 15.0:
+        penalty += 6.0
+    return round(max(0.0, score - penalty), 2)
+
+
+def _strict_profile_gate_errors(result: Mapping[str, Any], profile: Mapping[str, Any]) -> list[str]:
+    if profile.get("profile_name") != "strict_intraday_xauusd":
+        return []
+    minimum_rr = float(profile.get("minimum_rr", 3.0))
+    session_filters = dict(profile.get("session_filters", {}) or {})
+    disabled_killzones = {str(item).lower() for item in session_filters.get("disabled_killzones", []) or []}
+    require_killzone = bool(session_filters.get("require_killzone", False))
+    max_hold = _optional_float((profile.get("management", {}) or {}).get("max_hold_minutes"))
+    tolerance = float((profile.get("management", {}) or {}).get("hold_tolerance_minutes", 1.0))
+    errors: list[str] = []
+    for trade in result.get("completed_trade_log", []):
+        trade_id = trade.get("trade_id", "unknown")
+        post_cost_rr = _optional_float(trade.get("post_cost_rr"))
+        if post_cost_rr is None or post_cost_rr < minimum_rr:
+            errors.append(f"strict_gate_post_cost_rr_below_minimum:{trade_id}:{post_cost_rr}")
+        if require_killzone and not bool(trade.get("killzone_active")):
+            errors.append(f"strict_gate_no_killzone:{trade_id}")
+        killzone = str(trade.get("killzone_name") or "").lower()
+        if killzone and killzone in disabled_killzones:
+            errors.append(f"strict_gate_disabled_killzone:{trade_id}:{trade.get('killzone_name')}")
+        duration = _optional_float(trade.get("duration_min"))
+        if max_hold is not None and duration is not None and duration > max_hold + tolerance:
+            errors.append(f"strict_gate_max_hold_exceeded:{trade_id}:{duration}")
+    return errors
+
+
+def _filter_result_trade_window(result: dict[str, Any], started: str | None, ended: str | None) -> dict[str, Any]:
+    if not started and not ended:
+        return result
+    start_dt = _parse_cli_datetime(started) if started else None
+    end_dt = _parse_cli_datetime(ended) if ended else None
+
+    def keep(trade: Mapping[str, Any]) -> bool:
+        entry_time = _parse_cli_datetime(str(trade.get("entry_time"))) if trade.get("entry_time") else None
+        if entry_time is None:
+            return False
+        if start_dt and entry_time < start_dt:
+            return False
+        if end_dt and entry_time >= end_dt:
+            return False
+        return True
+
+    for key in ("trade_log", "completed_trade_log", "mark_to_market_trade_log"):
+        result[key] = [dict(trade) for trade in result.get(key, []) if keep(trade)]
+    result["performance_metrics"] = calculate_performance_metrics(result.get("completed_trade_log", []))
+    result["mark_to_market_metrics"] = calculate_performance_metrics(result.get("mark_to_market_trade_log", []))
+    result.setdefault("diagnostics", {})["trade_window_filter"] = {"from": started, "to": ended}
+    return result
+
+
 def load_backtest_profile(profile_name: str, selector_config_path: str | None = None) -> dict[str, Any]:
     path = Path(selector_config_path) if selector_config_path else DEFAULT_PROFILE_PATH
     profiles = json.loads(path.read_text(encoding="utf-8"))
@@ -1242,6 +1442,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--symbol", default="GOLD.i#")
     parser.add_argument("--from", dest="from_date", required=True, help="UTC start date/time, e.g. 2026-06-01")
     parser.add_argument("--to", dest="to_date", required=True, help="UTC end date/time, e.g. 2026-06-14")
+    parser.add_argument("--trade-window-from", help="Optional UTC entry-time lower bound for output trade logs.")
+    parser.add_argument("--trade-window-to", help="Optional UTC entry-time upper bound for output trade logs.")
     parser.add_argument("--csv-1m")
     parser.add_argument("--csv-15m")
     parser.add_argument("--csv-1h")
@@ -1255,6 +1457,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--disable-session", action="append", default=[], help="Disable a broad session name for this run.")
     parser.add_argument("--disable-killzone", action="append", default=[], help="Disable an exact killzone name for this run.")
     parser.add_argument("--target-final-rr", type=float, help="Override target ladder final RR, e.g. 3 or 6.")
+    parser.add_argument(
+        "--allow-failed-deployment-gates",
+        action="store_true",
+        help="Research only: write outputs even when strict deployment gates fail and return success.",
+    )
     parser.add_argument("--warmup-bars", type=int, default=80)
     parser.add_argument("--strategy-cooldown-minutes", type=int, default=15)
     parser.add_argument("--max-concurrent-positions", type=int, default=1)
@@ -1299,6 +1506,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     _configure_backtest_logging(verbose=args.verbose_logs)
     profile = _apply_cli_profile_overrides(load_backtest_profile(args.profile, args.selector_config), args)
     inputs = load_inputs(args)
+    git = _git_metadata()
+    generated_at = datetime.now(timezone.utc)
+    run_manifest = _build_run_manifest(args=args, profile=profile, git=git, inputs=inputs, generated_at=generated_at)
+    run_manifest["active_profile_hash"] = _stable_hash(profile)
+    selector_config = {
+        "enabled_strategies": profile.get("enabled_strategies", []),
+        "disabled_strategies": profile.get("disabled_strategies", []),
+        "minimum_score": profile.get("minimum_score"),
+        "minimum_rr": profile.get("minimum_rr"),
+        "strategy_min_rr": profile.get("strategy_min_rr", {}),
+        "strategy_min_scores": profile.get("strategy_min_scores", {}),
+        "session_filters": profile.get("session_filters", {}),
+        "strict_displacement": profile.get("strict_displacement", False),
+        "displacement_mode": profile.get("displacement_mode", "reject_weak_or_unverified" if profile.get("strict_displacement") else "off"),
+        "displacement_thresholds": profile.get("displacement_thresholds", {}),
+        "early_trap_filter": profile.get("early_trap_filter", {}),
+    }
+    run_manifest["selector_config_hash"] = _stable_hash(selector_config)
+    run_manifest["run_id"] = _run_id(run_manifest)
+    if profile.get("profile_name") == "broad_research":
+        print("This profile can produce sub-3R trades and is not deployment proof.")
+    if profile.get("profile_name") == "strict_intraday_xauusd":
+        print("Strict profile active: trades below configured post-cost RR will fail.")
     runner = FullSystemICTSMCBacktester(
         symbol=inputs.symbol,
         spread_price=float(profile["spread_price"]),
@@ -1316,19 +1546,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             "source": inputs.source,
             "profile_name": profile.get("profile_name"),
             "active_profile": profile,
-            "git": _git_metadata(),
+            "git": git,
             "command_args": vars(args),
-            "selector": {
-                "enabled_strategies": profile.get("enabled_strategies", []),
-                "disabled_strategies": profile.get("disabled_strategies", []),
-                "minimum_score": profile.get("minimum_score"),
-                "minimum_rr": profile.get("minimum_rr"),
-                "strategy_min_rr": profile.get("strategy_min_rr", {}),
-                "strategy_min_scores": profile.get("strategy_min_scores", {}),
-                "session_filters": profile.get("session_filters", {}),
-                "strict_displacement": profile.get("strict_displacement", False),
-                "displacement_thresholds": profile.get("displacement_thresholds", {}),
-            },
+            "selector": selector_config,
+            "run_manifest": run_manifest,
+            "run_id": run_manifest["run_id"],
+            "active_profile_hash": run_manifest["active_profile_hash"],
+            "selector_config_hash": run_manifest["selector_config_hash"],
             "minimum_rr": profile.get("minimum_rr"),
             "target_ladder": profile.get("target_ladder", {}),
             "spread_price": profile.get("spread_price"),
@@ -1349,6 +1573,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "slippage_price": profile.get("slippage_price"),
         "timeframes": {key: len(value) for key, value in inputs.candles_by_timeframe.items()},
     }
+    result = _filter_result_trade_window(result, args.trade_window_from, args.trade_window_to)
+    result["run_manifest"] = run_manifest
+    gate_errors = _strict_profile_gate_errors(result, profile)
+    result["deployment_gate_errors"] = gate_errors
+    if gate_errors:
+        result["report"]["warnings"] = list(result.get("report", {}).get("warnings", [])) + gate_errors
+        result["run_manifest"]["deployment_gate_errors"] = gate_errors
     paths = save_outputs(result, Path(args.output_dir), inputs.source)
     metrics = result["performance_metrics"]
     print("Apex ICT/SMC full-system backtest complete")
@@ -1360,6 +1591,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"report={paths['markdown']}")
     print(f"json={paths['json']}")
     print(f"trades_csv={paths['trades_csv']}")
+    print(f"run_manifest={paths['run_manifest']}")
+    if gate_errors and not args.allow_failed_deployment_gates:
+        print("Deployment gate errors:")
+        for error in gate_errors[:20]:
+            print(f"- {error}")
+        return 2
     return 0
 
 

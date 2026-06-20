@@ -19,6 +19,10 @@ on:
         description: "Days per chunk. Use 1 for fastest/reliable mobile testing."
         required: true
         default: "1"
+      warmup_days:
+        description: "Warmup days loaded before each chunk but excluded from reported trades."
+        required: true
+        default: "2"
       profile:
         description: "Backtest profile from config/backtest_profiles.json"
         required: true
@@ -54,6 +58,7 @@ jobs:
           FROM_DATE: ${{ inputs.from_date }}
           TO_DATE: ${{ inputs.to_date }}
           CHUNK_DAYS: ${{ inputs.chunk_days }}
+          WARMUP_DAYS: ${{ inputs.warmup_days }}
         run: |
           python - <<'PY'
           import json
@@ -70,6 +75,7 @@ jobs:
           started = parse_date(os.environ["FROM_DATE"])
           ended = parse_date(os.environ["TO_DATE"])
           chunk_days = max(1, int(os.environ.get("CHUNK_DAYS", "1")))
+          warmup_days = max(0, int(os.environ.get("WARMUP_DAYS", "2")))
           if ended <= started:
               raise SystemExit("to_date must be after from_date")
 
@@ -80,6 +86,7 @@ jobs:
               label = f"{cursor:%Y%m%d}_{next_cursor:%Y%m%d}"
               chunks.append({
                   "label": label,
+                  "warmup_from_date": (cursor - timedelta(days=warmup_days)).strftime("%Y-%m-%d"),
                   "from_date": cursor.strftime("%Y-%m-%d"),
                   "to_date": next_cursor.strftime("%Y-%m-%d"),
               })
@@ -121,6 +128,7 @@ jobs:
           CSV_PATH: ${{ inputs.csv_path }}
           FILTERED_CSV: backtest_inputs/xauusd_${{ matrix.label }}.csv
           FROM_DATE: ${{ matrix.from_date }}
+          WARMUP_FROM_DATE: ${{ matrix.warmup_from_date }}
           TO_DATE: ${{ matrix.to_date }}
         run: |
           mkdir -p backtest_inputs
@@ -145,7 +153,7 @@ jobs:
               parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
               return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
-          start = parse_dt(os.environ["FROM_DATE"])
+          start = parse_dt(os.environ["WARMUP_FROM_DATE"])
           end = parse_dt(os.environ["TO_DATE"])
           if not source.exists():
               raise SystemExit(f"CSV not found: {source}")
@@ -208,8 +216,10 @@ jobs:
           timeout 12m python scripts/run_ict_smc_backtest.py \
             --source csv \
             --symbol XAUUSD \
-            --from "${{ matrix.from_date }}" \
+            --from "${{ matrix.warmup_from_date }}" \
             --to "${{ matrix.to_date }}" \
+            --trade-window-from "${{ matrix.from_date }}" \
+            --trade-window-to "${{ matrix.to_date }}" \
             --csv-1m "backtest_inputs/xauusd_${{ matrix.label }}.csv" \
             --profile "$PROFILE" \
             --spread-price 0.40 \
@@ -225,3 +235,59 @@ jobs:
           path: |
             backtest_outputs/${{ matrix.label }}/
             backtest_inputs/xauusd_${{ matrix.label }}.csv
+
+  aggregate:
+    needs: backtest
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Get repo files
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download chunk artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded_backtests
+          pattern: fast_backtest_*
+          merge-multiple: true
+
+      - name: Combine trade CSVs and analyze
+        shell: bash
+        run: |
+          mkdir -p combined_backtest
+          python - <<'PY'
+          import csv
+          from pathlib import Path
+
+          files = sorted(Path("downloaded_backtests").rglob("*_trades.csv"))
+          if not files:
+              raise SystemExit("No chunk trade CSV files found")
+          fields = []
+          rows = []
+          for path in files:
+              with path.open("r", encoding="utf-8-sig", newline="") as handle:
+                  reader = csv.DictReader(handle)
+                  for field in reader.fieldnames or []:
+                      if field not in fields:
+                          fields.append(field)
+                  rows.extend(dict(row) for row in reader)
+          target = Path("combined_backtest/combined_trades.csv")
+          with target.open("w", encoding="utf-8", newline="") as handle:
+              writer = csv.DictWriter(handle, fieldnames=fields)
+              writer.writeheader()
+              for row in rows:
+                  writer.writerow({field: row.get(field, "") for field in fields})
+          print(f"combined_rows={len(rows)}")
+          PY
+          python scripts/analyze_trade_log.py combined_backtest/combined_trades.csv --output-prefix combined_backtest/combined_trade_analysis
+
+      - name: Upload combined report
+        uses: actions/upload-artifact@v4
+        with:
+          name: fast_backtest_combined_report
+          path: combined_backtest/

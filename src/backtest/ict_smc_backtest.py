@@ -277,6 +277,7 @@ def record_trade(trade: Mapping[str, Any]) -> dict[str, Any]:
 def record_skipped_setup(setup: Mapping[str, Any], reason: str) -> dict[str, Any]:
     """Create a structured skipped-setup audit record."""
 
+    setup_context = _mapping(setup.get("setup_context"))
     return {
         "skipped_id": setup.get("setup_id") or setup.get("signal_id"),
         "symbol": setup.get("symbol", "XAUUSD"),
@@ -286,6 +287,7 @@ def record_skipped_setup(setup: Mapping[str, Any], reason: str) -> dict[str, Any
         "reason": reason,
         "trade_allowed": False,
         "components_detected": setup.get("components_detected", {}),
+        "displacement_diagnostics": setup.get("displacement_diagnostics") or setup_context.get("displacement_diagnostics"),
         "filter_failed": [reason],
     }
 

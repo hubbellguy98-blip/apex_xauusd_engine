@@ -287,3 +287,23 @@ def test_selector_strict_profile_rejects_weak_displacement() -> None:
 
     assert result.selected is None
     assert "weak_displacement:body_to_range_ratio" in result.evaluations[0].reason
+
+
+def test_selector_displacement_reject_mode_rejects_missing_diagnostics() -> None:
+    def missing_displacement(context, config):
+        return {
+            "trade_allowed": True,
+            "direction": "bullish",
+            "entry": {"entry_price": 100.0},
+            "risk": {"stop_loss": 98.0, "target": 106.0, "rr": 3.0},
+            "score": {"total_score": 9.0, "trade_allowed": True},
+        }
+
+    selector = ICTSMCStrategySelector(
+        (StrategyDefinition("candidate", "Candidate", missing_displacement, SetupType.FVG_CONTINUATION),)
+    )
+
+    result = selector.evaluate(_context(), {"displacement_mode": "reject_weak_or_unverified"})
+
+    assert result.selected is None
+    assert "displacement_diagnostics_missing" in result.evaluations[0].reason

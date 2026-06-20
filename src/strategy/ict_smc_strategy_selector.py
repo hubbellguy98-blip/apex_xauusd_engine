@@ -608,7 +608,10 @@ def _session_filter_allows(context: Mapping[str, Any], config: Mapping[str, Any]
 
 
 def _displacement_rejection_reason(signal: Mapping[str, Any], config: Mapping[str, Any]) -> str:
-    if not bool(config.get("strict_displacement", False)):
+    mode = str(config.get("displacement_mode") or ("reject_weak_or_unverified" if config.get("strict_displacement") else "off")).lower()
+    if mode == "off":
+        return ""
+    if mode == "audit":
         return ""
     diagnostics = _displacement_diagnostics(signal)
     thresholds = config.get("displacement_thresholds", {})
@@ -625,7 +628,8 @@ def _displacement_rejection_reason(signal: Mapping[str, Any], config: Mapping[st
     failed = [name for name, minimum in checks.items() if float(diagnostics[name]) < minimum]
     if failed:
         return f"weak_displacement:{'|'.join(failed)}"
-    if "fvg_created" in diagnostics and not bool(diagnostics.get("fvg_created")):
+    claims_displacement = "displacement" in str(signal.get("components") or signal.get("components_detected") or signal).lower()
+    if (claims_displacement or "fvg_created" in diagnostics) and not bool(diagnostics.get("fvg_created")):
         return "weak_displacement:no_fvg_created"
     return ""
 

@@ -186,6 +186,9 @@ Profiles live in `config/backtest_profiles.json`:
 - `broad_research` keeps the selector broad and diagnostic.
 - `strict_intraday_xauusd` requires stricter score/RR, exact killzone handling, 3R post-cost acceptance, and intraday time exits.
 - `session_filtered_experiment` focuses on the stronger NY Open and Silver Bullet AM windows without hardcoding those filters into live strategy code.
+- `v3_candidate_safety` is a sweep-only candidate profile with London Open disabled, 3R post-cost acceptance, early-trap filtering, and strict displacement verification.
+
+If a trade log contains sub-3R completed trades, no-killzone trades under a require-killzone profile, disabled killzones, or holds beyond the configured max hold, it was not strict-profile compliant. That usually means the wrong profile was run, an older commit was used, or the output lacks run provenance.
 
 This runner:
 
@@ -200,6 +203,9 @@ This runner:
 - applies spread and slippage assumptions;
 - applies the same demo stop-hardening layer unless `--no-stop-hardening` is passed;
 - writes the git SHA, branch, command args, active profile, selector config, spread/slippage, data source, symbol, date range, and timeframe counts into the JSON/Markdown report;
+- writes a `run_manifest.json` next to every output;
+- stamps every trade CSV row with profile name, git SHA/branch, minimum RR/score, active profile hash, selector config hash, and run ID;
+- fails strict-profile runs by default when completed trades violate post-cost RR, killzone, disabled-killzone, or max-hold gates;
 - separates completed-trade metrics from open-at-end mark-to-market positions;
 - writes Markdown, JSON, and CSV reports into `backtest_outputs/`.
 
@@ -214,7 +220,10 @@ Profile override examples:
 ```powershell
 .\.venv\Scripts\python.exe scripts\run_ict_smc_backtest.py --source mt5 --symbol GOLD.i# --from 2026-06-01 --to 2026-06-14 --profile broad_research --minimum-rr 2
 .\.venv\Scripts\python.exe scripts\run_ict_smc_backtest.py --source mt5 --symbol GOLD.i# --from 2026-06-01 --to 2026-06-14 --profile strict_intraday_xauusd --target-final-rr 6
+.\.venv\Scripts\python.exe scripts\run_ict_smc_backtest.py --source mt5 --symbol GOLD.i# --from 2026-06-01 --to 2026-06-14 --profile v3_candidate_safety
 ```
+
+Use `--allow-failed-deployment-gates` only for research. Do not treat a run with failed deployment gates as live-ready.
 
 If the backtest shows too few trades, inspect the Strategy Diagnostics section:
 
@@ -251,6 +260,12 @@ After a run, analyze the exported trade CSV with:
 ```
 
 The analyzer writes Markdown and JSON covering overall metrics, direction, session, killzone, UTC hour, component tags, score buckets, duration buckets, displacement vs no-displacement, max drawdown, and streaks. Use this before changing VPS settings.
+
+The analyzer also supports older CSV names such as `score`, `exit_reason`, `tp1`, `tp2`, `entry`, `exit`, and `stop`. If a CSV has no `profile_name`, it warns with `legacy_or_unprofiled_trade_log`. New reports include profile compliance, strict-profile violations, post-cost RR distribution, early 0-15m metrics, exact component-combo metrics, and exclusion simulations for London Open, displacement-tagged trades, and 0-15m trades.
+
+## v3 Finding
+
+The v3 trade log was not compatible with `strict_intraday_xauusd`: it contained sub-3R trades, no-killzone trades, Silver Bullet PM trades, low-score trades, and holds beyond 180 minutes. The engine now records run provenance in every row and fails strict-profile runs if those violations reach the completed ledger. This does not make the system live-ready; it makes failed backtests impossible to mistake for strict deployment proof.
 
 ## Final Principle
 

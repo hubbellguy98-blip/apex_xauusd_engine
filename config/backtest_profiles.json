@@ -105,5 +105,51 @@
       "range_to_atr_ratio": 1.20,
       "close_position_score": 0.75
     }
+  },
+  "v3_candidate_safety": {
+    "description": "Candidate safety profile derived from v3 diagnostics: sweep-only, 3R post-cost minimum, London Open disabled, and early-trap/displacement safety gates.",
+    "enabled_strategies": ["sweep_mss_fvg"],
+    "disabled_strategies": [],
+    "minimum_score": 70.0,
+    "minimum_rr": 3.0,
+    "strategy_min_rr": {
+      "sweep_mss_fvg": 3.0
+    },
+    "strategy_min_scores": {},
+    "session_filters": {
+      "require_killzone": false,
+      "disabled_sessions": [],
+      "disabled_killzones": ["London Open"]
+    },
+    "management": {
+      "same_candle_policy": "conservative",
+      "max_hold_minutes": 180,
+      "close_at_session_end": true,
+      "friday_cutoff_utc": "20:00",
+      "stale_after_no_target_minutes": 90
+    },
+    "spread_price": 0.40,
+    "slippage_price": 0.10,
+    "target_ladder": {
+      "mode": "fixed_rr",
+      "final_rr": 3.0,
+      "milestones": [1, 2, 3],
+      "close_percents": [0.33, 0.33, 0.34]
+    },
+    "strict_displacement": true,
+    "displacement_mode": "reject_weak_or_unverified",
+    "displacement_thresholds": {
+      "body_to_range_ratio": 0.60,
+      "range_to_atr_ratio": 1.20,
+      "close_position_score": 0.75
+    },
+    "early_trap_filter": {
+      "enabled": true,
+      "min_confirmation_candles_after_retest": 1,
+      "max_entry_drift_risk_fraction": 0.15,
+      "reject_if_stop_inside_recent_noise": true,
+      "reject_if_retest_candle_closes_against_direction": true,
+      "reject_if_no_followthrough_after_retest": true
+    }
   }
 }
