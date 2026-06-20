@@ -24,6 +24,7 @@ class SessionDomainState:
     current_phase: SessionState
     last_phase_transition: datetime
     killzone_active: bool = False
+    killzone_name: str | None = None
 
     @property
     def is_killzone_active(self) -> bool:

@@ -1,9 +1,11 @@
 from src.strategy.ict_smc_strategies.sweep_mss_fvg_entry import (
+    SweepMSSFVGDirection,
     detect_fvg,
     detect_fvg_retest,
     detect_liquidity_sweep,
     detect_mss,
     generate_sweep_mss_fvg_signal,
+    _select_target,
 )
 
 BASE_CONFIG = {
@@ -44,6 +46,45 @@ def test_valid_bullish_sweep_mss_fvg_signal():
     assert signal["risk"]["target"] >= 112.0
     assert signal["trade_allowed"] is True
     assert signal["score"]["total_score"] >= 8.0
+
+
+def test_sweep_mss_fvg_respects_configured_timeframes():
+    candles = _bullish_candles()
+    bad_df = _bullish_candles_without_sweep()
+    context = {
+        "symbol": "XAUUSD",
+        "df": bad_df,
+        "candles_by_timeframe": {"1m": candles},
+        "liquidity_pools": [
+            _pool("ASIAN_LOW", "sell_side", 100.0, 100.2),
+            _pool("BUY_SIDE_TARGET", "buy_side", 112.0, 112.2),
+        ],
+        "swings": [{"swing_id": "POST_SWEEP_HIGH", "kind": "high", "index": 3, "price": 102.5}],
+        "session_context": {"session": "london_killzone"},
+        "htf_bias": "bullish",
+        "spread_status": {"spread_points": 0.1, "spread_safe": True},
+    }
+
+    signal = generate_sweep_mss_fvg_signal(context, {**BASE_CONFIG, "setup_timeframe": "1m", "entry_timeframe": "1m"})
+
+    assert signal["signal_status"] == "valid"
+
+
+def test_select_target_rejects_wrong_side_context_liquidity():
+    pools = [_pool("BUY_SIDE_TARGET", "buy_side", 112.0, 112.2)]
+    context = {"target_liquidity": _pool("WRONG", "sell_side", 96.0, 96.2)}
+
+    target = _select_target(104.0, 100.0, pools, context, SweepMSSFVGDirection.BULLISH, 2.0)
+
+    assert target == 112.2
+
+
+def test_select_target_requires_minimum_rr():
+    pools = [_pool("TOO_CLOSE", "buy_side", 105.0, 105.2)]
+
+    target = _select_target(104.0, 100.0, pools, {}, SweepMSSFVGDirection.BULLISH, 3.0)
+
+    assert target is None
 
 
 def test_valid_bearish_sweep_mss_fvg_signal():

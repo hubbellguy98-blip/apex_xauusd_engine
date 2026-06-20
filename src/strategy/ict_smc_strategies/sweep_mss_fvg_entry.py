@@ -318,8 +318,13 @@ def generate_sweep_mss_fvg_signal(
     """Combine all strategy steps into one backtest-safe signal decision."""
 
     cfg = _config(config)
-    setup_df = context.get("m15_df", context.get("df", context.get("candles", [])))
-    entry_df = context.get("m5_df", setup_df)
+    setup_df, setup_fallback = _timeframe_rows(context, str(cfg["setup_timeframe"]), ("setup_df", "df", "candles"))
+    entry_df, entry_fallback = _timeframe_rows(context, str(cfg["entry_timeframe"]), ("entry_df", "df", "candles"))
+    fallback_warnings = []
+    if setup_fallback:
+        fallback_warnings.append(f"setup_timeframe_fallback:{cfg['setup_timeframe']}")
+    if entry_fallback:
+        fallback_warnings.append(f"entry_timeframe_fallback:{cfg['entry_timeframe']}")
     candles = _closed_candles(setup_df)
     if len(candles) < 3:
         return _no_trade(context, SweepMSSFVGStatus.REJECTED, ["insufficient_closed_candles"])
@@ -405,7 +410,8 @@ def generate_sweep_mss_fvg_signal(
             "warnings": [
                 "Backtest fills must be candle-forward only.",
                 "If stop and target hit in the same candle, assume stop first unless lower-timeframe data resolves it.",
-            ],
+            ]
+            + fallback_warnings,
         }
 
     return _no_trade(context, SweepMSSFVGStatus.REJECTED, rejected or ["no_complete_sweep_mss_fvg_sequence"])
@@ -573,7 +579,15 @@ def _select_target(
     target_context = context.get("target_liquidity")
     if isinstance(target_context, Mapping):
         price = _float(_get(target_context, "price", "target_price", "zone_mid", default=None))
-        if price is not None:
+        if price is not None and _valid_target_price(
+            price,
+            entry,
+            stop,
+            direction,
+            min_rr,
+            target_context,
+            context.get("latest_sweep_event"),
+        ):
             return price
     side = "buy_side" if direction is SweepMSSFVGDirection.BULLISH else "sell_side"
     candidates: list[float] = []
@@ -593,6 +607,26 @@ def _select_target(
         if risk > 0 and reward / risk >= min_rr:
             return price
     return None
+
+
+def _valid_target_price(
+    price: float,
+    entry: float,
+    stop: float,
+    direction: SweepMSSFVGDirection,
+    min_rr: float,
+    target: Mapping[str, Any] | None = None,
+    latest_sweep: Mapping[str, Any] | None = None,
+) -> bool:
+    if direction is SweepMSSFVGDirection.BULLISH and price <= entry:
+        return False
+    if direction is SweepMSSFVGDirection.BEARISH and price >= entry:
+        return False
+    if _same_liquidity_pool(target, latest_sweep):
+        return False
+    risk = abs(entry - stop)
+    reward = abs(price - entry)
+    return risk > 0 and reward / risk >= min_rr
 
 
 def _select_fvg_after_mss(
@@ -713,7 +747,33 @@ def _config(config: Mapping[str, Any] | None) -> dict[str, Any]:
         "max_spread_points": float(data.get("max_spread_points", 1.0)),
         "min_rr": float(data.get("min_rr", 2.0)),
         "minimum_setup_score": float(data.get("minimum_setup_score", 7.5)),
+        "setup_timeframe": str(data.get("setup_timeframe", "1m")),
+        "entry_timeframe": str(data.get("entry_timeframe", "1m")),
     }
+
+
+def _timeframe_rows(
+    context: Mapping[str, Any],
+    timeframe: str,
+    fallback_keys: Sequence[str],
+) -> tuple[Any, bool]:
+    by_timeframe = context.get("candles_by_timeframe", {}) or {}
+    if isinstance(by_timeframe, Mapping) and by_timeframe.get(timeframe):
+        return by_timeframe[timeframe], False
+    for key in fallback_keys:
+        if context.get(key):
+            return context[key], True
+    return [], True
+
+
+def _same_liquidity_pool(left: Mapping[str, Any] | None, right: Mapping[str, Any] | None) -> bool:
+    if not left or not right:
+        return False
+    left_ids = {str(_get(left, key, default="")) for key in ("liquidity_id", "id", "swept_liquidity_id")}
+    right_ids = {str(_get(right, key, default="")) for key in ("liquidity_id", "id", "swept_liquidity_id")}
+    left_ids.discard("")
+    right_ids.discard("")
+    return bool(left_ids and right_ids and left_ids.intersection(right_ids))
 
 
 def _closed_candles(rows: Sequence[Mapping[str, Any] | Any] | Any) -> list[_Candle]:

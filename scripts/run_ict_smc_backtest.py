@@ -43,9 +43,11 @@ from src.backtest.ict_smc_backtest import (
 )
 from src.core.domain.constants import OrderDirection
 from src.core.domain.market_data import CandleNode, TickNode
+from src.execution.rr_math import calculate_post_cost_rr, calculate_raw_rr, risk_to_cost_ratio
 from src.execution.stop_loss_engine import DynamicStructuralStopEngine
 from src.infrastructure.broker.mt5_config import load_mt5_config
 from src.strategy.ict_smc_strategy_selector import ICTSMCStrategySelector, StrategyEvaluation
+from src.strategy.selector_profile import load_selector_profile, normalize_selector_profile
 
 TIMEFRAME_MINUTES = {"1m": 1, "15m": 15, "1h": 60, "4h": 240}
 DEFAULT_PROFILE_PATH = ROOT / "config" / "backtest_profiles.json"
@@ -176,6 +178,18 @@ class FullSystemICTSMCBacktester:
                         continue
                     post_cost_rr = _post_cost_rr(order, fill)
                     minimum_rr = float(config.get("selector", {}).get("minimum_rr", config.get("minimum_rr", 1.5)))
+                    minimum_risk_cost = float(config.get("selector", {}).get("minimum_risk_to_cost_ratio", 0.0))
+                    fill_price = _optional_float(fill.get("fill_price"))
+                    stop_loss = _optional_float(order.get("stop_loss"))
+                    risk_cost_ratio = (
+                        risk_to_cost_ratio(fill_price, stop_loss, self.spread_price, self.slippage_price)
+                        if fill_price is not None and stop_loss is not None
+                        else 0.0
+                    )
+                    if risk_cost_ratio < minimum_risk_cost:
+                        skipped_log.append(record_skipped_setup(order, f"risk_too_small_vs_cost:{round(risk_cost_ratio, 4)}"))
+                        pending_orders.remove(order)
+                        continue
                     if post_cost_rr < minimum_rr:
                         skipped_log.append(record_skipped_setup(order, f"post_cost_rr_below_minimum:{round(post_cost_rr, 4)}"))
                         pending_orders.remove(order)
@@ -672,6 +686,8 @@ def _write_trade_csv(path: Path, trades: Sequence[Mapping[str, Any]]) -> None:
         "target_1",
         "target_2",
         "final_target",
+        "raw_rr",
+        "estimated_post_cost_rr",
         "estimated_rr",
         "post_cost_rr",
         "confidence_score",
@@ -746,7 +762,19 @@ def _setup_to_market_signal(
         "killzone_active": setup_context["killzone_active"],
         "spread_price": config.get("spread_price"),
         "slippage_price": config.get("slippage_price"),
-        "move_stop_to_be_after_target_1": True,
+        "raw_rr": calculate_raw_rr(setup.direction.value, setup.entry_price, setup.stop_loss, final_target),
+        "estimated_post_cost_rr": calculate_post_cost_rr(
+            setup.direction.value,
+            setup.entry_price,
+            setup.stop_loss,
+            final_target,
+            float(config.get("spread_price") or 0.0),
+            float(config.get("slippage_price") or 0.0),
+        ),
+        "move_stop_to_be_after_target_1": int(config.get("move_stop_to_be_after_target_index", 1) or 0) <= 1,
+        "move_stop_to_be_after_target_index": int(config.get("move_stop_to_be_after_target_index", 1) or 0),
+        "breakeven_buffer_price": float(config.get("breakeven_buffer_price") or 0.0),
+        "breakeven_after_rr": config.get("breakeven_after_rr"),
         "trade_allowed": True,
         "components_detected": {"strategy": selected.definition.key, "raw": setup_context["components"]},
         "setup_context": setup_context,
@@ -784,6 +812,9 @@ def _position_from_fill(order: Mapping[str, Any], fill: Mapping[str, Any]) -> di
         "realized_R": 0.0,
         "partials": [],
         "move_stop_to_be_after_target_1": bool(order.get("move_stop_to_be_after_target_1", True)),
+        "move_stop_to_be_after_target_index": order.get("move_stop_to_be_after_target_index", 1),
+        "breakeven_buffer_price": order.get("breakeven_buffer_price", 0.0),
+        "breakeven_after_rr": order.get("breakeven_after_rr"),
         "entry_time": fill.get("fill_time"),
         "signal_time": order.get("signal_time"),
         "order_type": order.get("order_type"),
@@ -797,6 +828,8 @@ def _position_from_fill(order: Mapping[str, Any], fill: Mapping[str, Any]) -> di
         "slippage_price": order.get("slippage_price"),
         "entry_drift": round(drift, 5) if drift is not None else None,
         "drift_risk_fraction": round(drift / risk, 5) if drift is not None and risk and risk > 0 else None,
+        "raw_rr": order.get("raw_rr"),
+        "estimated_post_cost_rr": order.get("estimated_post_cost_rr"),
         "components": order.get("components_detected"),
         "rejection_reasons": order.get("rejection_reasons", []),
         "setup_context": order.get("setup_context", {}),
@@ -897,12 +930,15 @@ def _post_cost_rr(order: Mapping[str, Any], fill: Mapping[str, Any]) -> float:
         final_target = _optional_float(list(order.get("targets", []))[-1].get("price"))
     if fill_price is None or stop is None or final_target is None:
         return 0.0
-    risk = abs(fill_price - stop)
-    if risk <= 0:
-        return 0.0
     direction = str(order.get("direction", "")).upper()
-    reward = final_target - fill_price if direction == OrderDirection.BUY.value else fill_price - final_target
-    return round(max(0.0, reward / risk), 5)
+    return calculate_post_cost_rr(
+        direction,
+        fill_price,
+        stop,
+        final_target,
+        _optional_float(order.get("spread_price")) or 0.0,
+        _optional_float(order.get("slippage_price")) or 0.0,
+    )
 
 
 def _early_trap_filter_rejection(signal: Mapping[str, Any], context: Mapping[str, Any], config: Mapping[str, Any]) -> str | None:
@@ -1307,30 +1343,47 @@ def _calibrated_score(trade: Mapping[str, Any]) -> float | None:
     return round(max(0.0, score - penalty), 2)
 
 
-def _strict_profile_gate_errors(result: Mapping[str, Any], profile: Mapping[str, Any]) -> list[str]:
-    if profile.get("profile_name") != "strict_intraday_xauusd":
+def _deployment_gate_errors(result: Mapping[str, Any], profile: Mapping[str, Any]) -> list[str]:
+    gate = dict(profile.get("deployment_gate", {}) or {})
+    if not bool(gate.get("enforce", profile.get("profile_name") == "strict_intraday_xauusd")):
         return []
     minimum_rr = float(profile.get("minimum_rr", 3.0))
     session_filters = dict(profile.get("session_filters", {}) or {})
     disabled_killzones = {str(item).lower() for item in session_filters.get("disabled_killzones", []) or []}
+    disabled_sessions = {str(item).lower() for item in session_filters.get("disabled_sessions", []) or []}
     require_killzone = bool(session_filters.get("require_killzone", False))
     max_hold = _optional_float((profile.get("management", {}) or {}).get("max_hold_minutes"))
     tolerance = float((profile.get("management", {}) or {}).get("hold_tolerance_minutes", 1.0))
     errors: list[str] = []
-    for trade in result.get("completed_trade_log", []):
+    completed = list(result.get("completed_trade_log", []))
+    minimum_completed = int(gate.get("minimum_completed_trades", 0) or 0)
+    if minimum_completed and len(completed) < minimum_completed:
+        errors.append(f"deployment_gate_minimum_completed_trades_not_met:{len(completed)}<{minimum_completed}")
+    for trade in completed:
         trade_id = trade.get("trade_id", "unknown")
         post_cost_rr = _optional_float(trade.get("post_cost_rr"))
-        if post_cost_rr is None or post_cost_rr < minimum_rr:
-            errors.append(f"strict_gate_post_cost_rr_below_minimum:{trade_id}:{post_cost_rr}")
+        if bool(gate.get("require_post_cost_rr", True)) and (post_cost_rr is None or post_cost_rr < minimum_rr):
+            errors.append(f"deployment_gate_post_cost_rr_below_minimum:{trade_id}:{post_cost_rr}")
         if require_killzone and not bool(trade.get("killzone_active")):
-            errors.append(f"strict_gate_no_killzone:{trade_id}")
+            errors.append(f"deployment_gate_no_killzone:{trade_id}")
+        session = str(trade.get("session_name") or "").lower()
+        if session and session in disabled_sessions:
+            errors.append(f"deployment_gate_disabled_session:{trade_id}:{trade.get('session_name')}")
         killzone = str(trade.get("killzone_name") or "").lower()
         if killzone and killzone in disabled_killzones:
-            errors.append(f"strict_gate_disabled_killzone:{trade_id}:{trade.get('killzone_name')}")
+            errors.append(f"deployment_gate_disabled_killzone:{trade_id}:{trade.get('killzone_name')}")
         duration = _optional_float(trade.get("duration_min"))
         if max_hold is not None and duration is not None and duration > max_hold + tolerance:
-            errors.append(f"strict_gate_max_hold_exceeded:{trade_id}:{duration}")
+            errors.append(f"deployment_gate_max_hold_exceeded:{trade_id}:{duration}")
+        if bool(gate.get("require_profile_metadata", False)):
+            for key in ("profile_name", "run_id", "active_profile_hash", "selector_config_hash"):
+                if not trade.get(key):
+                    errors.append(f"deployment_gate_missing_metadata:{trade_id}:{key}")
     return errors
+
+
+def _strict_profile_gate_errors(result: Mapping[str, Any], profile: Mapping[str, Any]) -> list[str]:
+    return _deployment_gate_errors(result, profile)
 
 
 def _filter_result_trade_window(result: dict[str, Any], started: str | None, ended: str | None) -> dict[str, Any]:
@@ -1358,15 +1411,7 @@ def _filter_result_trade_window(result: dict[str, Any], started: str | None, end
 
 
 def load_backtest_profile(profile_name: str, selector_config_path: str | None = None) -> dict[str, Any]:
-    path = Path(selector_config_path) if selector_config_path else DEFAULT_PROFILE_PATH
-    profiles = json.loads(path.read_text(encoding="utf-8"))
-    if profile_name not in profiles:
-        available = ", ".join(sorted(profiles))
-        raise ValueError(f"Unknown backtest profile {profile_name!r}. Available profiles: {available}")
-    profile = dict(profiles[profile_name])
-    profile["profile_name"] = profile_name
-    profile["profile_path"] = str(path)
-    return profile
+    return load_selector_profile(profile_name, selector_config_path or DEFAULT_PROFILE_PATH)
 
 
 def _apply_cli_profile_overrides(profile: Mapping[str, Any], args: argparse.Namespace) -> dict[str, Any]:
@@ -1510,19 +1555,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     generated_at = datetime.now(timezone.utc)
     run_manifest = _build_run_manifest(args=args, profile=profile, git=git, inputs=inputs, generated_at=generated_at)
     run_manifest["active_profile_hash"] = _stable_hash(profile)
-    selector_config = {
-        "enabled_strategies": profile.get("enabled_strategies", []),
-        "disabled_strategies": profile.get("disabled_strategies", []),
-        "minimum_score": profile.get("minimum_score"),
-        "minimum_rr": profile.get("minimum_rr"),
-        "strategy_min_rr": profile.get("strategy_min_rr", {}),
-        "strategy_min_scores": profile.get("strategy_min_scores", {}),
-        "session_filters": profile.get("session_filters", {}),
-        "strict_displacement": profile.get("strict_displacement", False),
-        "displacement_mode": profile.get("displacement_mode", "reject_weak_or_unverified" if profile.get("strict_displacement") else "off"),
-        "displacement_thresholds": profile.get("displacement_thresholds", {}),
-        "early_trap_filter": profile.get("early_trap_filter", {}),
-    }
+    selector_config = normalize_selector_profile(profile)
     run_manifest["selector_config_hash"] = _stable_hash(selector_config)
     run_manifest["run_id"] = _run_id(run_manifest)
     if profile.get("profile_name") == "broad_research":
@@ -1555,6 +1588,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "selector_config_hash": run_manifest["selector_config_hash"],
             "minimum_rr": profile.get("minimum_rr"),
             "target_ladder": profile.get("target_ladder", {}),
+            "move_stop_to_be_after_target_index": profile.get("move_stop_to_be_after_target_index", 1),
+            "breakeven_buffer_price": profile.get("breakeven_buffer_price", 0.0),
+            "breakeven_after_rr": profile.get("breakeven_after_rr"),
             "spread_price": profile.get("spread_price"),
             "slippage_price": profile.get("slippage_price"),
             "news_calendar_loaded": False,
@@ -1575,7 +1611,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     result = _filter_result_trade_window(result, args.trade_window_from, args.trade_window_to)
     result["run_manifest"] = run_manifest
-    gate_errors = _strict_profile_gate_errors(result, profile)
+    gate_errors = _deployment_gate_errors(result, profile)
     result["deployment_gate_errors"] = gate_errors
     if gate_errors:
         result["report"]["warnings"] = list(result.get("report", {}).get("warnings", [])) + gate_errors

@@ -6,12 +6,14 @@ Latency Profile: Single-threaded async processing loop running via internal prio
 
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
+import os
 from typing import Any, Deque, Dict, List, Tuple
 import structlog
 
 from src.core.base_engine import BaseSubsystem
 from src.core.events.event_bus import EventBus
 from src.core.events.event_types import EngineEventType
+from src.core.domain.constants import SessionState
 from src.core.domain.market_data import TickNode, CandleNode
 from src.core.domain.confirmation_models import ConfirmationSnapshot
 from src.strategy.state_manager import CentralRuntimeStateManager
@@ -24,13 +26,27 @@ from src.analytics.structure_engine import DeterministicStructureEngine
 from src.core.domain.setup_models import SetupOpportunityNode
 from src.strategy.setup_lifecycle import SetupLifecycleManager
 from src.strategy.ict_smc_strategy_selector import ICTSMCStrategySelector
+from src.strategy.selector_profile import (
+    DEFAULT_SHADOW_PROFILE,
+    load_selector_profile,
+    normalize_selector_profile,
+    profile_hash,
+)
 
 logger = structlog.get_logger()
 
 class MarketSetupOrchestrator(BaseSubsystem):
     """Orchestrates algorithmic data components, evaluates sequencing logic, and publishes validated trade nodes."""
 
-    def __init__(self, event_bus: EventBus, state_manager: CentralRuntimeStateManager, confirmation_engine: TradeConfirmationOrchestrator) -> None:
+    def __init__(
+        self,
+        event_bus: EventBus,
+        state_manager: CentralRuntimeStateManager,
+        confirmation_engine: TradeConfirmationOrchestrator,
+        *,
+        selector_config: Dict[str, Any] | None = None,
+        profile_name: str | None = None,
+    ) -> None:
         super().__init__("MarketSetupOrchestrator")
         self._event_bus = event_bus
         self._state_manager = state_manager
@@ -42,6 +58,15 @@ class MarketSetupOrchestrator(BaseSubsystem):
         self._liquidity_engine = LiquidityInterceptionEngine("1m")
         self._session_engine = GoldSessionIntelligenceEngine()
         self._strategy_selector = ICTSMCStrategySelector()
+        self._selector_profile = (
+            load_selector_profile(profile_name or os.getenv("APEX_SELECTOR_PROFILE") or DEFAULT_SHADOW_PROFILE)
+            if selector_config is None
+            else {"profile_name": profile_name or selector_config.get("profile_name") or "custom_selector_config"}
+        )
+        self._selector_config = dict(selector_config or normalize_selector_profile(self._selector_profile))
+        self._selector_profile_name = str(self._selector_config.get("profile_name") or self._selector_profile.get("profile_name"))
+        self._selector_config_hash = profile_hash(self._selector_config)
+        self._selector_profile_hash = profile_hash(self._selector_profile)
         self._selector_evaluation_interval = timedelta(seconds=1)
         self._last_selector_evaluation_at: datetime | None = None
 
@@ -87,7 +112,9 @@ class MarketSetupOrchestrator(BaseSubsystem):
         """Processes real-time ticks to evaluate reversals and run active setup invalidation checks."""
         self._diagnostics["live_ticks_processed"] += 1
         current_time = event.timestamp.replace(tzinfo=None)
-        session, is_killzone, _ = self._session_engine.evaluate_temporal_context(event.timestamp, event.mid)
+        session_context = self._session_engine.evaluate_session_context(event.timestamp, event.mid)
+        session = SessionState(session_context.session_name)
+        is_killzone = session_context.killzone_active
         await self._state_manager.commit_market_update(
             {
                 "last_tick_time": current_time,
@@ -105,6 +132,7 @@ class MarketSetupOrchestrator(BaseSubsystem):
                 "current_phase": session,
                 "last_phase_transition": current_time,
                 "killzone_active": is_killzone,
+                "killzone_name": session_context.killzone_name,
             },
             event.correlation_id or f"SETUP_SESSION_{event.sequence_id}",
         )
@@ -136,8 +164,8 @@ class MarketSetupOrchestrator(BaseSubsystem):
             if current_time - self._last_selector_evaluation_at < self._selector_evaluation_interval:
                 return
         self._last_selector_evaluation_at = current_time
-        context = self._build_ict_strategy_context(event, swept_pools, session)
-        selection = self._strategy_selector.evaluate(context)
+        context = self._build_ict_strategy_context(event, swept_pools, session_context)
+        selection = self._strategy_selector.evaluate(context, self._selector_config)
         self._latest_strategy_selection = selection.diagnostics
         self._diagnostics["ict_strategy_evaluations"] += selection.diagnostics["ict_selector_evaluated"]
 
@@ -207,7 +235,7 @@ class MarketSetupOrchestrator(BaseSubsystem):
         self,
         event: TickNode,
         swept_pools: List[Tuple[Any, float]],
-        session: str,
+        session: Any,
     ) -> Dict[str, Any]:
         """Adapt live engine state into the strategy-library context contract."""
         candles_by_tf = {
@@ -215,7 +243,9 @@ class MarketSetupOrchestrator(BaseSubsystem):
             for timeframe, candles in self._candles_by_timeframe.items()
         }
         candles_1m = candles_by_tf.get("1m", [])
-        session_value = str(getattr(session, "value", session))
+        session_value = str(getattr(session, "session_name", getattr(session, "value", session)))
+        killzone_active = bool(getattr(session, "killzone_active", self._state_manager.snapshot.session.killzone_active))
+        killzone_name = getattr(session, "killzone_name", None)
         active_pools = self._liquidity_engine.active_pools_snapshot()
         swept_payloads = [self._swept_pool_payload(pool, depth) for pool, depth in swept_pools]
         liquidity_pools = active_pools + swept_payloads
@@ -252,7 +282,12 @@ class MarketSetupOrchestrator(BaseSubsystem):
                 "confidence_score": 7.5,
             },
             "higher_timeframe_bias": self._bias_to_strategy_text(bias.get("4h") or bias.get("1h")),
-            "session_context": {"session": session_value, "killzone_active": self._state_manager.snapshot.session.killzone_active},
+            "session_context": {
+                "session": session_value,
+                "session_name": session_value,
+                "killzone_active": killzone_active,
+                "killzone_name": killzone_name,
+            },
             "session": session_value,
             "spread_status": {
                 "spread_points": event.spread,
@@ -418,6 +453,9 @@ class MarketSetupOrchestrator(BaseSubsystem):
         nearest_pool = self._liquidity_engine.nearest_active_pool(self._state_manager.snapshot.market.current_mid)
         return {
             **self._diagnostics,
+            "selector_profile_name": self._selector_profile_name,
+            "selector_config_hash": self._selector_config_hash,
+            "selector_profile_hash": self._selector_profile_hash,
             "latest_confirmation_reasons": list(self._latest_confirmation_reasons),
             "nearest_active_pool": nearest_pool,
             "latest_ict_strategy_selection": dict(self._latest_strategy_selection),

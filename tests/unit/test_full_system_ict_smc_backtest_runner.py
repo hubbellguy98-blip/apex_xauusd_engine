@@ -174,10 +174,45 @@ def test_strict_profile_gate_rejects_non_compliant_completed_trades() -> None:
 
     errors = _strict_profile_gate_errors(result, profile)
 
-    assert any(error.startswith("strict_gate_post_cost_rr_below_minimum") for error in errors)
-    assert any(error.startswith("strict_gate_no_killzone") for error in errors)
-    assert any(error.startswith("strict_gate_disabled_killzone") for error in errors)
-    assert any(error.startswith("strict_gate_max_hold_exceeded") for error in errors)
+    assert any(error.startswith("deployment_gate_post_cost_rr_below_minimum") for error in errors)
+    assert any(error.startswith("deployment_gate_no_killzone") for error in errors)
+    assert any(error.startswith("deployment_gate_disabled_killzone") for error in errors)
+    assert any(error.startswith("deployment_gate_max_hold_exceeded") for error in errors)
+
+
+def test_generic_deployment_gate_applies_to_v3_candidate_safety() -> None:
+    result = {
+        "completed_trade_log": [
+            {
+                "trade_id": "V3_BAD",
+                "profile_name": "v3_candidate_safety",
+                "run_id": "BT_TEST",
+                "active_profile_hash": "abc",
+                "selector_config_hash": "def",
+                "post_cost_rr": 2.9,
+                "killzone_name": "London Open",
+                "duration_min": 30,
+            }
+        ]
+    }
+    profile = {
+        "profile_name": "v3_candidate_safety",
+        "minimum_rr": 3.0,
+        "session_filters": {"disabled_killzones": ["London Open"]},
+        "management": {"max_hold_minutes": 180},
+        "deployment_gate": {
+            "enforce": True,
+            "minimum_completed_trades": 30,
+            "require_post_cost_rr": True,
+            "require_profile_metadata": True,
+        },
+    }
+
+    errors = _strict_profile_gate_errors(result, profile)
+
+    assert "deployment_gate_minimum_completed_trades_not_met:1<30" in errors
+    assert any(error.startswith("deployment_gate_post_cost_rr_below_minimum") for error in errors)
+    assert any(error.startswith("deployment_gate_disabled_killzone") for error in errors)
 
 
 def test_early_trap_filter_rejects_no_followthrough_pattern() -> None:
@@ -250,12 +285,30 @@ def test_analyzer_supports_legacy_score_and_column_names(tmp_path) -> None:
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(
             handle,
-            fieldnames=["trade_id", "score", "entry", "exit", "stop", "exit_reason", "tp1", "tp2", "realized_R", "post_cost_rr", "duration_min"],
+            fieldnames=[
+                "trade_id",
+                "profile",
+                "session",
+                "killzone",
+                "score",
+                "entry",
+                "exit",
+                "stop",
+                "exit_reason",
+                "tp1",
+                "tp2",
+                "realized_R",
+                "post_cost_rr",
+                "duration_min",
+            ],
         )
         writer.writeheader()
         writer.writerow(
             {
                 "trade_id": "L1",
+                "profile": "v3_candidate_safety",
+                "session": "NEWYORK_SESSION",
+                "killzone": "NY Open",
                 "score": 72,
                 "entry": 100,
                 "exit": 99,
@@ -272,5 +325,7 @@ def test_analyzer_supports_legacy_score_and_column_names(tmp_path) -> None:
     analysis = analyze_trade_log(path)
 
     assert analysis["by_score_bucket"]["70-74"]["trades"] == 1
+    assert analysis["by_session"]["NEWYORK_SESSION"]["trades"] == 1
+    assert analysis["by_killzone"]["NY Open"]["trades"] == 1
     assert "legacy_or_unprofiled_trade_log" in analysis["warnings"]
     assert analysis["early_exit_0_15m"]["trades"] == 1

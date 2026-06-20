@@ -246,8 +246,17 @@ def simulate_trade_management(
         partials.append(event)
         events.append(event)
         target["filled"] = True
-        if target["name"] == "target_1" and bool(pos.get("move_stop_to_be_after_target_1", False)):
-            pos["current_stop"] = entry
+        target_index = int(str(target["name"]).replace("final_target", "999").replace("target_", "") or 0)
+        be_after_index = int(pos.get("move_stop_to_be_after_target_index", 1) or 0)
+        be_after_rr = _float(pos.get("breakeven_after_rr"))
+        target_rr = _float(target.get("rr")) or r_value
+        should_move_to_be = bool(pos.get("move_stop_to_be_after_target_1", False)) and (
+            (be_after_rr is not None and target_rr >= be_after_rr)
+            or (be_after_rr is None and be_after_index > 0 and target_index >= be_after_index)
+        )
+        if should_move_to_be:
+            buffer_price = _float(pos.get("breakeven_buffer_price")) or 0.0
+            pos["current_stop"] = entry + buffer_price if direction is BacktestDirection.BULLISH else entry - buffer_price
 
     pos.update(
         {
@@ -580,6 +589,9 @@ def _position_from_fill(order: Mapping[str, Any], fill: Mapping[str, Any]) -> di
             "partials": [],
             "current_stop": data.get("stop_loss"),
             "move_stop_to_be_after_target_1": data.get("move_stop_to_be_after_target_1", True),
+            "move_stop_to_be_after_target_index": data.get("move_stop_to_be_after_target_index", 1),
+            "breakeven_buffer_price": data.get("breakeven_buffer_price", 0.0),
+            "breakeven_after_rr": data.get("breakeven_after_rr"),
             "ambiguous_fill": fill.get("ambiguity_flag", False),
         }
     )

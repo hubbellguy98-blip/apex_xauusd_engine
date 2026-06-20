@@ -7,6 +7,7 @@ import asyncio
 from collections import deque
 from dataclasses import replace
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 import sys
 from uuid import uuid4
@@ -16,6 +17,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.core.domain.execution_models import OrderRequest, OrderStatus
+from src.core.domain.constants import OrderDirection
+from src.execution.rr_math import calculate_post_cost_rr, risk_to_cost_ratio
 from src.core.events.event_bus import EventBus
 from src.execution.position_tracker import (
     InstitutionalTradeLifecycleManager,
@@ -33,6 +36,7 @@ from src.infrastructure.telemetry.telegram_reporting import TelegramReportingSer
 from src.strategy.confirmation_orchestrator import TradeConfirmationOrchestrator
 from src.strategy.scoring_matrix import TradeScoringOrchestrator
 from src.strategy.setup_detector import MarketSetupOrchestrator
+from src.strategy.selector_profile import DEFAULT_SHADOW_PROFILE, load_selector_profile, normalize_selector_profile
 from src.strategy.state_manager import CentralRuntimeStateManager
 
 EXECUTION_CONFIRMATION = "ENABLE_ONE_INTELLIGENT_DEMO_TRADE"
@@ -164,9 +168,13 @@ async def run_strategy(
     warmup_bars: int,
     execute_one_demo_trade: bool,
     manage_open_demo_trade: bool,
+    profile_name: str | None = None,
 ) -> int:
     configured = load_mt5_config(ROOT / ".env")
     mode = resolve_runner_mode(execute_one_demo_trade, manage_open_demo_trade)
+    selected_profile_name = profile_name or os.getenv("APEX_SELECTOR_PROFILE") or DEFAULT_SHADOW_PROFILE
+    selected_profile = load_selector_profile(selected_profile_name)
+    selector_config = normalize_selector_profile(selected_profile)
     try:
         reporting = TelegramReportingService.from_env_file(ROOT / ".env", ROOT)
     except RuntimeError as exc:
@@ -190,7 +198,13 @@ async def run_strategy(
     event_bus = EventBus()
     state_manager = CentralRuntimeStateManager()
     confirmation = TradeConfirmationOrchestrator(event_bus, state_manager)
-    detector = MarketSetupOrchestrator(event_bus, state_manager, confirmation)
+    detector = MarketSetupOrchestrator(
+        event_bus,
+        state_manager,
+        confirmation,
+        selector_config=selector_config,
+        profile_name=selected_profile_name,
+    )
     scoring = TradeScoringOrchestrator(event_bus, state_manager)
     risk = None
     lifecycle = InstitutionalTradeLifecycleManager()
@@ -213,6 +227,8 @@ async def run_strategy(
         duration_seconds=duration_seconds,
         poll_seconds=poll_seconds,
         warmup_bars=warmup_bars,
+        selector_profile=selected_profile_name,
+        selector_config_hash=detector.diagnostic_snapshot["selector_config_hash"],
     )
 
     await state_manager.bootstrap()
@@ -273,6 +289,8 @@ async def run_strategy(
         print(f"connection_retries={connection_retries}")
         print(f"open_gold_positions_at_start={len(existing_positions)}")
         print(f"startup_reconciliation={reconciliation_status}")
+        print(f"selector_profile={selected_profile_name}")
+        print(f"selector_config_hash={detector.diagnostic_snapshot['selector_config_hash']}")
         print(f"historical_bars_processed={len(histories['1m'])}")
         print(f"structure_pivots={detector.tracked_structural_pivots}")
         print(f"historical_sweeps_cleared={detector.warmup_sweeps_cleared}")
@@ -290,6 +308,8 @@ async def run_strategy(
             connection_retries=connection_retries,
             open_positions_at_start=len(existing_positions),
             startup_reconciliation=reconciliation_status,
+            selector_profile=selected_profile_name,
+            selector_config_hash=detector.diagnostic_snapshot["selector_config_hash"],
             historical_bars_processed=len(histories["1m"]),
             structure_pivots=detector.tracked_structural_pivots,
             historical_sweeps_cleared=detector.warmup_sweeps_cleared,
@@ -480,10 +500,57 @@ async def run_strategy(
                             reasons=["RISK_REJECTED_AFTER_STOP_HARDENING", *risk_snapshot.rejection_reasons],
                         )
                         continue
+                expected_fill = tick.ask if setup.direction is OrderDirection.BUY else tick.bid
+                expected_post_cost_rr = calculate_post_cost_rr(
+                    setup.direction.value,
+                    expected_fill,
+                    setup.stop_loss,
+                    setup.take_profit,
+                    tick.spread,
+                    float(selected_profile.get("slippage_price", 0.0)),
+                )
+                risk_cost_ratio = risk_to_cost_ratio(
+                    expected_fill,
+                    setup.stop_loss,
+                    tick.spread,
+                    float(selected_profile.get("slippage_price", 0.0)),
+                )
+                minimum_rr = float(selector_config.get("minimum_rr", selected_profile.get("minimum_rr", 3.0)))
+                minimum_risk_cost = float(selector_config.get("minimum_risk_to_cost_ratio", 0.0))
+                if risk_cost_ratio < minimum_risk_cost:
+                    print("candidate_status=BLOCKED_RISK_TOO_SMALL_VS_COST")
+                    reporting.record(
+                        "CANDIDATE_BLOCKED",
+                        "WARNING",
+                        mode=mode,
+                        symbol=symbol,
+                        setup_id=setup.id,
+                        direction=setup.direction.value,
+                        estimated_post_cost_rr=expected_post_cost_rr,
+                        risk_to_cost_ratio=risk_cost_ratio,
+                        minimum_risk_to_cost_ratio=minimum_risk_cost,
+                        reasons=["risk_too_small_vs_cost"],
+                    )
+                    continue
+                if expected_post_cost_rr < minimum_rr:
+                    print("candidate_status=BLOCKED_POST_COST_RR_BELOW_MINIMUM")
+                    reporting.record(
+                        "CANDIDATE_BLOCKED",
+                        "WARNING",
+                        mode=mode,
+                        symbol=symbol,
+                        setup_id=setup.id,
+                        direction=setup.direction.value,
+                        estimated_post_cost_rr=expected_post_cost_rr,
+                        minimum_rr=minimum_rr,
+                        reasons=["post_cost_rr_below_minimum"],
+                    )
+                    continue
                 qualified += 1
                 print(f"qualified_direction={setup.direction.value}")
                 print(f"qualified_score={ranked.score_breakdown.normalized_final_score:.2f}")
                 print(f"qualified_lots={risk_snapshot.sizing.calculated_lots:.2f}")
+                print(f"estimated_post_cost_rr={expected_post_cost_rr:.2f}")
                 await reporting.record_and_notify(
                     "RISK_APPROVED",
                     "INFO",
@@ -498,6 +565,8 @@ async def run_strategy(
                     stop_loss=setup.stop_loss,
                     take_profit=setup.take_profit,
                     estimated_rr=setup.estimated_rr,
+                    estimated_post_cost_rr=expected_post_cost_rr,
+                    risk_to_cost_ratio=risk_cost_ratio,
                     confidence_score=setup.confidence_score,
                     final_score=ranked.score_breakdown.normalized_final_score,
                     calculated_lots=risk_snapshot.sizing.calculated_lots,
@@ -748,6 +817,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--confirm-execution")
     parser.add_argument("--manage-open-demo", action="store_true")
     parser.add_argument("--confirm-management")
+    parser.add_argument("--profile", default=None, help="Selector profile name. Defaults to APEX_SELECTOR_PROFILE or v3_candidate_safety.")
     args = parser.parse_args()
     if args.duration_seconds <= 0 or args.poll_seconds <= 0 or args.warmup_bars <= 0:
         parser.error("duration, poll interval, and warmup bars must be positive.")
@@ -768,6 +838,7 @@ if __name__ == "__main__":
                 arguments.warmup_bars,
                 arguments.execute_one_demo,
                 arguments.manage_open_demo,
+                arguments.profile,
             )
         )
     )
