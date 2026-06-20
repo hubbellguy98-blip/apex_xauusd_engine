@@ -59,6 +59,17 @@ python -m compileall -q config src scripts tests
 python -m pytest
 ```
 
+## ICT/SMC Backtest Profiles
+
+Selector backtests are profile-driven so results are reproducible and not hidden behind code defaults. Profiles live in `config/backtest_profiles.json`.
+
+```powershell
+python scripts/run_ict_smc_backtest.py --source mt5 --symbol GOLD.i# --from 2026-06-01 --to 2026-06-14 --profile strict_intraday_xauusd
+python scripts/analyze_trade_log.py .\backtest_outputs\ict_smc_backtest_mt5_YYYYMMDD_HHMMSS_trades.csv
+```
+
+The JSON/Markdown reports include git SHA, branch, command args, active profile, selector config, spread/slippage, symbol, source, date range, timeframe counts, diagnostics, and deployment-readiness warnings. The strict intraday profile requires post-cost final RR of at least 3R and supports a configurable 1:3 or 1:6 target ladder.
+
 ## Runtime Notes
 
 The live engine expects environment values such as `APEX_TWELVEDATA_KEY` and `DATABASE_URL`. For development, keep those in a local `.env` file and do not commit secrets.

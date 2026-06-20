@@ -44,13 +44,7 @@ SignalGenerator = Callable[[Mapping[str, Any], Mapping[str, Any] | None], dict[s
 DEFAULT_MIN_SELECTOR_SCORE = 88.0
 DEFAULT_MIN_SELECTOR_RR = 1.5
 DEFAULT_SETUP_EXPIRATION_MINUTES = 20
-DEFAULT_DISABLED_STRATEGIES = frozenset(
-    {
-        "sweep_mss_fvg",
-        "order_block_retest",
-        "htf_poi_ltf_confirmation",
-    }
-)
+DEFAULT_DISABLED_STRATEGIES = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,9 +198,17 @@ class ICTSMCStrategySelector:
         config: Mapping[str, Any] | None,
     ) -> StrategyEvaluation:
         cfg = dict(config or {})
+        enabled = _strategy_set(cfg, "enabled_strategies", frozenset())
+        if enabled and definition.key not in enabled:
+            return StrategyEvaluation(definition=definition, status="SKIPPED", reason="strategy_not_enabled_by_profile")
+
         disabled = _strategy_set(cfg, "disabled_strategies", DEFAULT_DISABLED_STRATEGIES)
         if definition.key in disabled:
             return StrategyEvaluation(definition=definition, status="SKIPPED", reason="strategy_disabled_by_risk_gate")
+
+        session_allowed, session_reason = _session_filter_allows(context, cfg)
+        if not session_allowed:
+            return StrategyEvaluation(definition=definition, status="SKIPPED", reason=session_reason)
 
         eligible, reason = self._is_eligible(definition, context)
         if not eligible:
@@ -287,6 +289,9 @@ class ICTSMCStrategySelector:
             missing.append(f"score_below_minimum:{min_score:g}")
         if rr < min_rr:
             missing.append(f"rr_below_minimum:{min_rr:g}")
+        displacement_reason = _displacement_rejection_reason(signal, cfg)
+        if displacement_reason:
+            missing.append(displacement_reason)
         status = "TRADEABLE" if not missing else "REJECTED"
         return StrategyEvaluation(
             definition=definition,
@@ -308,10 +313,12 @@ class ICTSMCStrategySelector:
             if len(candles or []) < definition.min_candles:
                 return False, f"not_enough_{timeframe}_candles"
 
-        raw_session = _nested(context, "session_context.session") or context.get("session") or ""
+        raw_session = _nested(context, "session_context.session_name") or _nested(context, "session_context.session") or context.get("session") or ""
         session = str(getattr(raw_session, "value", raw_session)).upper()
-        if definition.session_tags and session and session not in definition.session_tags:
-            return False, f"session_{session}_not_eligible"
+        killzone = str(_nested(context, "session_context.killzone_name") or "").upper()
+        tags = {tag.upper() for tag in definition.session_tags}
+        if tags and session not in tags and killzone not in tags:
+            return False, f"session_{session or 'NONE'}_killzone_{killzone or 'NONE'}_not_eligible"
 
         if definition.requires_sweep and not context.get("latest_sweep_event"):
             return False, "no_recent_liquidity_sweep"
@@ -374,7 +381,7 @@ class ICTSMCStrategySelector:
                 SetupType.FVG_CONTINUATION,
                 priority=90,
                 min_candles=18,
-                session_tags=("LONDON_KILLZONE", "NEWYORK_KILLZONE"),
+                session_tags=("London Open", "NY Open", "Silver Bullet AM", "Silver Bullet PM"),
             ),
             StrategyDefinition(
                 "judas_swing",
@@ -418,7 +425,7 @@ class ICTSMCStrategySelector:
                 SetupType.LIQUIDITY_SWEEP_REVERSAL,
                 priority=78,
                 min_candles=30,
-                session_tags=("ASI_ACCUMULATION", "ASIAN_ACCUMULATION", "LONDON_KILLZONE", "NEWYORK_KILLZONE"),
+                session_tags=("ASI_ACCUMULATION", "ASIAN_ACCUMULATION", "ASIAN_SESSION", "London Open", "NY Open"),
             ),
             StrategyDefinition(
                 "pdh_pdl_raid",
@@ -436,7 +443,7 @@ class ICTSMCStrategySelector:
                 SetupType.LIQUIDITY_SWEEP_REVERSAL,
                 priority=83,
                 min_candles=18,
-                session_tags=("LONDON_KILLZONE", "NEWYORK_KILLZONE"),
+                session_tags=("London Open", "NY Open", "Silver Bullet AM", "Silver Bullet PM"),
             ),
             StrategyDefinition(
                 "liquidity_to_liquidity",
@@ -569,6 +576,81 @@ def _strategy_threshold(config: Mapping[str, Any], strategy_key: str, key: str, 
     if _is_number(config.get(global_key)):
         return float(config[global_key])
     return default
+
+
+def _session_filter_allows(context: Mapping[str, Any], config: Mapping[str, Any]) -> tuple[bool, str]:
+    filters = config.get("session_filters", {})
+    if not isinstance(filters, Mapping):
+        return True, ""
+    session_name = str(_nested(context, "session_context.session_name") or context.get("session") or "").upper()
+    killzone_name = str(_nested(context, "session_context.killzone_name") or "").upper()
+    killzone_active = bool(_nested(context, "session_context.killzone_active"))
+
+    disabled_sessions = {str(item).upper() for item in _as_sequence(filters.get("disabled_sessions"))}
+    if session_name in disabled_sessions:
+        return False, f"session_disabled_by_profile:{session_name}"
+
+    disabled_killzones = {str(item).upper() for item in _as_sequence(filters.get("disabled_killzones"))}
+    if killzone_name and killzone_name in disabled_killzones:
+        return False, f"killzone_disabled_by_profile:{killzone_name}"
+
+    allowed_sessions = {str(item).upper() for item in _as_sequence(filters.get("allowed_sessions"))}
+    if allowed_sessions and session_name not in allowed_sessions:
+        return False, f"session_not_allowed_by_profile:{session_name or 'NONE'}"
+
+    allowed_killzones = {str(item).upper() for item in _as_sequence(filters.get("allowed_killzones"))}
+    if allowed_killzones and killzone_name not in allowed_killzones:
+        return False, f"killzone_not_allowed_by_profile:{killzone_name or 'NONE'}"
+
+    if bool(filters.get("require_killzone", False)) and not killzone_active:
+        return False, "no_exact_killzone_active"
+    return True, ""
+
+
+def _displacement_rejection_reason(signal: Mapping[str, Any], config: Mapping[str, Any]) -> str:
+    if not bool(config.get("strict_displacement", False)):
+        return ""
+    diagnostics = _displacement_diagnostics(signal)
+    thresholds = config.get("displacement_thresholds", {})
+    if not isinstance(thresholds, Mapping):
+        thresholds = {}
+    checks = {
+        "body_to_range_ratio": float(thresholds.get("body_to_range_ratio", 0.60)),
+        "range_to_atr_ratio": float(thresholds.get("range_to_atr_ratio", 1.20)),
+        "close_position_score": float(thresholds.get("close_position_score", 0.75)),
+    }
+    missing = [name for name in checks if not _is_number(diagnostics.get(name))]
+    if missing:
+        return f"displacement_diagnostics_missing:{'|'.join(missing)}"
+    failed = [name for name, minimum in checks.items() if float(diagnostics[name]) < minimum]
+    if failed:
+        return f"weak_displacement:{'|'.join(failed)}"
+    if "fvg_created" in diagnostics and not bool(diagnostics.get("fvg_created")):
+        return "weak_displacement:no_fvg_created"
+    return ""
+
+
+def _displacement_diagnostics(signal: Mapping[str, Any]) -> Mapping[str, Any]:
+    for path in (
+        "displacement_diagnostics",
+        "displacement",
+        "entry.displacement_diagnostics",
+        "score.displacement_diagnostics",
+    ):
+        value = _nested(signal, path)
+        if isinstance(value, Mapping):
+            return value
+    return {}
+
+
+def _as_sequence(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, Sequence):
+        return list(value)
+    return [value]
 
 
 def _is_number(value: Any) -> bool:

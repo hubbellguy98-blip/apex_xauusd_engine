@@ -39,6 +39,10 @@ class BacktestExitReason(str, Enum):
     BREAKEVEN_STOP = "breakeven_stop"
     END_OF_TEST = "end_of_test"
     AMBIGUOUS_STOP_FIRST = "ambiguous_stop_first"
+    MAX_HOLD_TIME = "max_hold_time"
+    SESSION_CLOSE = "session_close"
+    FRIDAY_CUTOFF = "friday_cutoff"
+    STALE_TRADE = "stale_trade"
 
 
 class BacktestTradeResult(str, Enum):
@@ -202,6 +206,14 @@ def simulate_trade_management(
     if risk <= 0:
         return {"position": pos, "events": [], "closed_trade": None, "status": "invalid_risk"}
 
+    time_exit_reason = _time_exit_reason(pos, row, cfg)
+    if time_exit_reason:
+        close_price = _float(row.get("close")) or entry
+        realized_r += remaining * _r_multiple(direction, entry, initial_stop, close_price)
+        closed = _closed_trade(pos, row, time_exit_reason, realized_r, partials, False, exit_price=close_price)
+        pos.update({"remaining_percent": 0.0, "realized_R": realized_r, "closed": True})
+        return {"position": pos, "events": events, "closed_trade": closed, "status": "closed"}
+
     stop_hit = _stop_touched(direction, current_stop, row)
     hit_targets = [target for target in targets if not target.get("filled") and _target_touched(direction, target["price"], row)]
     if stop_hit and hit_targets and cfg.get("same_candle_policy", "conservative") == "conservative":
@@ -343,11 +355,40 @@ def generate_backtest_report(
         warnings.append("small_sample_size")
     if metrics["ambiguous_candle_count"]:
         warnings.append("ambiguous_ohlc_exits_used_conservative_stop_first")
+    profit_factor = metrics.get("profit_factor")
+    if profit_factor is None or profit_factor < float(cfg.get("minimum_profit_factor", 1.2)):
+        warnings.append("deployment_gate_profit_factor_below_1_2")
+    if metrics["expectancy_R"] <= 0:
+        warnings.append("deployment_gate_expectancy_not_positive")
+    if metrics["net_R"] <= 0:
+        warnings.append("deployment_gate_net_R_not_positive")
+    if metrics["max_drawdown_R"] > float(cfg.get("maximum_drawdown_R", 10.0)):
+        warnings.append("deployment_gate_max_drawdown_too_high")
+    rr_values = [_float(_mapping(trade).get("post_cost_rr")) for trade in trade_log]
+    low_rr_count = sum(1 for value in rr_values if value is not None and value < float(cfg.get("minimum_rr", 3.0)))
+    missing_rr_count = sum(1 for value in rr_values if value is None)
+    if low_rr_count:
+        warnings.append("deployment_gate_final_rr_below_minimum")
+    if missing_rr_count and trade_log:
+        warnings.append("post_cost_rr_missing_from_some_trades")
+    if any((_float(_mapping(trade).get("duration_min")) or 0.0) > float(cfg.get("duration_outlier_minutes", 240.0)) for trade in trade_log):
+        warnings.append("deployment_gate_duration_outliers_present")
+    session_pf = _profit_factor_by_key(trade_log, "session_name")
+    weak_sessions = sorted(key for key, value in session_pf.items() if value is None or value < 1.0)
+    if weak_sessions:
+        warnings.append(f"deployment_gate_session_pf_below_1:{'|'.join(weak_sessions)}")
+    if _score_buckets_non_monotonic(trade_log):
+        warnings.append("deployment_gate_score_buckets_non_monotonic")
     return {
         "function": "generate_backtest_report",
         "strategy_summary": cfg.get("strategy_summary", {}),
         "data_summary": cfg.get("data_summary", {}),
         "performance_metrics": metrics,
+        "analytics": {
+            "profit_factor_by_session": session_pf,
+            "profit_factor_by_killzone": _profit_factor_by_key(trade_log, "killzone_name"),
+            "score_buckets": _score_bucket_summary(trade_log),
+        },
         "skipped_setup_count": len(skipped),
         "top_skip_reasons": _top_reasons(skipped),
         "warnings": _dedupe(warnings),
@@ -459,6 +500,8 @@ def _normalize_order(signal: Mapping[str, Any], config: Mapping[str, Any]) -> _O
         raise ValueError("Backtest orders require signal_time/order_placed_time.")
     expiry = _order_expiry_time(data, config, signal_time)
     targets = tuple(_normalize_targets(data.get("targets") or data.get("target_ladder") or data))
+    setup_context = dict(data)
+    setup_context.update(_mapping(data.get("setup_context")))
     return _Order(
         order_id=str(data.get("order_id") or data.get("trade_id") or data.get("setup_id") or f"ORDER_{signal_time.isoformat()}"),
         symbol=str(data.get("symbol", config.get("symbol", "XAUUSD"))),
@@ -469,7 +512,7 @@ def _normalize_order(signal: Mapping[str, Any], config: Mapping[str, Any]) -> _O
         entry_price=float(data.get("entry_price")),
         stop_loss=float(data.get("stop_loss")),
         targets=targets,
-        setup_context=data.get("setup_context", data),
+        setup_context=setup_context,
         expiry_time=expiry,
     )
 
@@ -542,7 +585,7 @@ def _position_from_fill(order: Mapping[str, Any], fill: Mapping[str, Any]) -> di
 
 
 def _order_output(order: _Order) -> dict[str, Any]:
-    return {
+    output = {
         "order_id": order.order_id,
         "symbol": order.symbol,
         "direction": order.direction.value,
@@ -555,6 +598,27 @@ def _order_output(order: _Order) -> dict[str, Any]:
         "setup_context": dict(order.setup_context),
         "expiry_time": _iso(order.expiry_time),
     }
+    for key in (
+        "strategy",
+        "setup_type",
+        "entry_type",
+        "intended_entry_price",
+        "target_1",
+        "target_2",
+        "final_target",
+        "estimated_rr",
+        "confidence_score",
+        "session_name",
+        "killzone_name",
+        "killzone_active",
+        "spread_price",
+        "slippage_price",
+        "components_detected",
+        "rejection_reasons",
+    ):
+        if key in order.setup_context:
+            output[key] = order.setup_context[key]
+    return output
 
 
 def _fill_result(
@@ -583,31 +647,133 @@ def _closed_trade(
     realized_r: float,
     partials: Sequence[Mapping[str, Any]],
     ambiguous: bool,
+    *,
+    exit_price: float | None = None,
 ) -> dict[str, Any]:
+    setup_context = _mapping(position.get("setup_context", {}))
+    entry_time = position.get("entry_time")
+    exit_time = candle.get("close_time") or candle.get("timestamp")
     return {
         "trade_id": position.get("trade_id") or position.get("order_id"),
         "symbol": position.get("symbol"),
+        "strategy": position.get("strategy") or setup_context.get("strategy"),
         "direction": _direction(position.get("direction")).value,
-        "setup_type": _mapping(position.get("setup_context", {})).get("setup_type"),
+        "session_name": position.get("session_name") or setup_context.get("session_name"),
+        "killzone_name": position.get("killzone_name") or setup_context.get("killzone_name"),
+        "killzone_active": position.get("killzone_active", setup_context.get("killzone_active")),
+        "setup_type": setup_context.get("setup_type"),
         "entry_type": position.get("entry_type"),
         "order_type": position.get("order_type"),
         "signal_time": position.get("signal_time"),
-        "entry_time": position.get("entry_time"),
-        "exit_time": candle.get("close_time") or candle.get("timestamp"),
+        "entry_time": entry_time,
+        "exit_time": exit_time,
+        "duration_min": _duration_minutes(entry_time, exit_time),
         "entry_price": position.get("entry_price"),
+        "intended_entry_price": position.get("intended_entry_price") or position.get("setup_entry_price"),
+        "fill_price": position.get("fill_price") or position.get("entry_price"),
+        "exit_price": exit_price if exit_price is not None else _exit_price_for_reason(position, reason),
         "stop_loss": position.get("stop_loss"),
+        "initial_risk": abs(float(position.get("entry_price", 0.0)) - float(position.get("stop_loss", 0.0))),
+        "target_1": _target_price(position, "target_1"),
+        "target_2": _target_price(position, "target_2"),
+        "final_target": _target_price(position, "final_target") or _last_target_price(position),
+        "estimated_rr": position.get("estimated_rr") or setup_context.get("estimated_rr"),
+        "post_cost_rr": position.get("post_cost_rr"),
+        "confidence_score": position.get("confidence_score") or setup_context.get("confidence_score"),
         "partials": [dict(item) for item in partials],
         "final_exit_reason": reason,
         "realized_R": round(realized_r, 5),
         "result": _trade_result(realized_r).value,
         "ambiguous_exit": ambiguous,
-        "setup_score": _mapping(position.get("setup_context", {})).get("setup_score"),
-        "grade": _mapping(position.get("setup_context", {})).get("grade"),
+        "components": position.get("components") or setup_context.get("components") or setup_context.get("components_detected"),
+        "rejection_reasons": position.get("rejection_reasons") or setup_context.get("rejection_reasons"),
+        "spread_price": position.get("spread_price"),
+        "slippage_price": position.get("slippage_price"),
+        "entry_drift": position.get("entry_drift"),
+        "drift_risk_fraction": position.get("drift_risk_fraction"),
+        "displacement_diagnostics": position.get("displacement_diagnostics") or setup_context.get("displacement_diagnostics"),
+        "setup_score": setup_context.get("setup_score"),
+        "grade": setup_context.get("grade"),
     }
 
 
 def _targets_from_position(position: Mapping[str, Any]) -> list[dict[str, Any]]:
     return [dict(target) for target in _normalize_targets(position.get("targets", []))]
+
+
+def _time_exit_reason(position: Mapping[str, Any], candle: Mapping[str, Any], config: Mapping[str, Any]) -> str | None:
+    entry_time = _parse_time(position.get("entry_time"))
+    eval_time = _parse_time(candle.get("close_time") or candle.get("timestamp"))
+    if entry_time is None or eval_time is None:
+        return None
+
+    friday_cutoff = _parse_hhmm(config.get("friday_cutoff_utc"))
+    if friday_cutoff and eval_time.weekday() == 4 and eval_time.astimezone(timezone.utc).time() >= friday_cutoff:
+        return BacktestExitReason.FRIDAY_CUTOFF.value
+
+    max_hold = _float(config.get("max_hold_minutes"))
+    age_minutes = (eval_time - entry_time).total_seconds() / 60.0
+    if max_hold is not None and max_hold > 0 and age_minutes >= max_hold:
+        return BacktestExitReason.MAX_HOLD_TIME.value
+
+    stale_after = _float(config.get("stale_after_no_target_minutes"))
+    if stale_after is not None and stale_after > 0 and age_minutes >= stale_after:
+        partials = _as_list(position.get("partials"))
+        if not partials:
+            return BacktestExitReason.STALE_TRADE.value
+
+    if bool(config.get("close_at_session_end", False)):
+        entry_session = str(position.get("session_name") or "")
+        current_session = str(candle.get("session_name") or "")
+        if entry_session and current_session and current_session != entry_session:
+            return BacktestExitReason.SESSION_CLOSE.value
+
+    return None
+
+
+def _duration_minutes(start: Any, end: Any) -> float | None:
+    parsed_start = _parse_time(start)
+    parsed_end = _parse_time(end)
+    if parsed_start is None or parsed_end is None:
+        return None
+    return round((parsed_end - parsed_start).total_seconds() / 60.0, 2)
+
+
+def _parse_hhmm(value: Any) -> Any:
+    if value in {None, ""}:
+        return None
+    if hasattr(value, "hour") and hasattr(value, "minute"):
+        return value
+    text = str(value).strip()
+    try:
+        hour, minute = text.split(":", 1)
+        return datetime.strptime(f"{int(hour):02d}:{int(minute):02d}", "%H:%M").time()
+    except (TypeError, ValueError):
+        return None
+
+
+def _target_price(position: Mapping[str, Any], name: str) -> float | None:
+    for target in _targets_from_position(position):
+        if target.get("name") == name:
+            return _float(target.get("price"))
+    return None
+
+
+def _last_target_price(position: Mapping[str, Any]) -> float | None:
+    targets = _targets_from_position(position)
+    if not targets:
+        return None
+    return _float(targets[-1].get("price"))
+
+
+def _exit_price_for_reason(position: Mapping[str, Any], reason: str) -> float | None:
+    if reason == BacktestExitReason.STOP_LOSS.value:
+        return _float(position.get("current_stop", position.get("stop_loss")))
+    if reason == BacktestExitReason.BREAKEVEN_STOP.value:
+        return _float(position.get("entry_price"))
+    if reason == BacktestExitReason.FINAL_TARGET.value:
+        return _last_target_price(position)
+    return None
 
 
 def _risk_per_unit(direction: BacktestDirection, entry: float, stop: float) -> float:
@@ -700,6 +866,51 @@ def _top_reasons(skipped: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         {"reason": reason, "count": count}
         for reason, count in sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
     ]
+
+
+def _profit_factor_by_key(trades: Sequence[Mapping[str, Any] | Any], key: str) -> dict[str, float | None]:
+    groups: dict[str, list[float]] = {}
+    for trade in trades:
+        data = _mapping(trade)
+        group = str(data.get(key) or "None")
+        groups.setdefault(group, []).append(float(data.get("realized_R", 0.0)))
+    out: dict[str, float | None] = {}
+    for group, values in groups.items():
+        wins = sum(value for value in values if value > 0)
+        losses = abs(sum(value for value in values if value < 0))
+        out[group] = round(wins / losses, 5) if losses else None
+    return out
+
+
+def _score_bucket_summary(trades: Sequence[Mapping[str, Any] | Any]) -> dict[str, dict[str, Any]]:
+    buckets: dict[str, list[float]] = {}
+    for trade in trades:
+        data = _mapping(trade)
+        score = _float(data.get("confidence_score") or data.get("setup_score"))
+        if score is None:
+            continue
+        lower = int(score // 5 * 5)
+        label = f"{lower}-{lower + 4}"
+        buckets.setdefault(label, []).append(float(data.get("realized_R", 0.0)))
+    return {
+        label: {
+            "trades": len(values),
+            "net_R": round(sum(values), 5),
+            "expectancy_R": round(mean(values), 5) if values else 0.0,
+        }
+        for label, values in sorted(buckets.items())
+    }
+
+
+def _score_buckets_non_monotonic(trades: Sequence[Mapping[str, Any] | Any]) -> bool:
+    summary = _score_bucket_summary(trades)
+    if len(summary) < 3:
+        return False
+    ordered = sorted((int(label.split("-", 1)[0]), data["expectancy_R"]) for label, data in summary.items())
+    for index in range(1, len(ordered)):
+        if ordered[index][1] + 0.05 < ordered[index - 1][1]:
+            return True
+    return False
 
 
 def _parse_time(value: Any) -> datetime | None:

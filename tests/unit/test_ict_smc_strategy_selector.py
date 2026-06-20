@@ -15,7 +15,7 @@ def _context() -> dict:
     return {
         "candles": candles,
         "candles_by_timeframe": {"1m": candles, "15m": candles},
-        "session_context": {"session": "LONDON_KILLZONE"},
+        "session_context": {"session": "LONDON_SESSION", "session_name": "LONDON_SESSION", "killzone_active": True, "killzone_name": "London Open"},
         "latest_sweep_event": {"id": "sweep_1"},
         "htf_bias": {"bias_direction": "bullish"},
     }
@@ -129,7 +129,7 @@ def test_selector_builds_live_setup_and_confirmation_contracts() -> None:
     assert "valid" in confirmation.validated_components
 
 
-def test_selector_default_gate_skips_disabled_report_loser_strategy() -> None:
+def test_selector_profile_gate_skips_disabled_report_loser_strategy() -> None:
     def valid_disabled_strategy(context, config):
         return {
             "trade_allowed": True,
@@ -150,11 +150,38 @@ def test_selector_default_gate_skips_disabled_report_loser_strategy() -> None:
         )
     )
 
-    result = selector.evaluate(_context())
+    result = selector.evaluate(_context(), {"disabled_strategies": ["sweep_mss_fvg"]})
 
     assert result.selected is None
     assert result.evaluations[0].status == "SKIPPED"
     assert result.evaluations[0].reason == "strategy_disabled_by_risk_gate"
+
+
+def test_selector_profile_can_enable_sweep_mss_fvg_reproducibly() -> None:
+    def valid_sweep(context, config):
+        return {
+            "trade_allowed": True,
+            "direction": "bullish",
+            "entry": {"entry_price": 100.0},
+            "risk": {"stop_loss": 98.0, "target": 106.0, "rr": 3.0},
+            "score": {"total_score": 9.2, "trade_allowed": True},
+        }
+
+    selector = ICTSMCStrategySelector(
+        (
+            StrategyDefinition(
+                "sweep_mss_fvg",
+                "Sweep MSS FVG",
+                valid_sweep,
+                SetupType.LIQUIDITY_SWEEP_REVERSAL,
+            ),
+        )
+    )
+
+    result = selector.evaluate(_context(), {"enabled_strategies": ["sweep_mss_fvg"], "minimum_rr": 3.0})
+
+    assert result.selected is not None
+    assert result.selected.definition.key == "sweep_mss_fvg"
 
 
 def test_selector_default_gate_requires_elite_score_unless_overridden() -> None:
@@ -177,3 +204,86 @@ def test_selector_default_gate_requires_elite_score_unless_overridden() -> None:
     assert blocked.selected is None
     assert "score_below_minimum:88" in blocked.evaluations[0].reason
     assert allowed.selected is not None
+
+
+def test_selector_strict_profile_requires_rr_three() -> None:
+    def low_rr(context, config):
+        return {
+            "trade_allowed": True,
+            "direction": "bullish",
+            "entry": {"entry_price": 100.0},
+            "risk": {"stop_loss": 98.0, "target": 104.0, "rr": 2.0},
+            "score": {"total_score": 9.0, "trade_allowed": True},
+        }
+
+    selector = ICTSMCStrategySelector(
+        (StrategyDefinition("candidate", "Candidate", low_rr, SetupType.FVG_CONTINUATION),)
+    )
+
+    result = selector.evaluate(_context(), {"minimum_rr": 3.0})
+
+    assert result.selected is None
+    assert "rr_below_minimum:3" in result.evaluations[0].reason
+
+
+def test_selector_filters_no_killzone_when_profile_requires_exact_killzone() -> None:
+    def valid(context, config):
+        return {
+            "trade_allowed": True,
+            "direction": "bullish",
+            "entry": {"entry_price": 100.0},
+            "risk": {"stop_loss": 98.0, "target": 106.0, "rr": 3.0},
+            "score": {"total_score": 9.0, "trade_allowed": True},
+        }
+
+    selector = ICTSMCStrategySelector(
+        (StrategyDefinition("candidate", "Candidate", valid, SetupType.FVG_CONTINUATION),)
+    )
+    context = _context()
+    context["session_context"] = {
+        "session": "LONDON_SESSION",
+        "session_name": "LONDON_SESSION",
+        "killzone_active": False,
+        "killzone_name": None,
+    }
+
+    result = selector.evaluate(context, {"session_filters": {"require_killzone": True}})
+
+    assert result.selected is None
+    assert result.evaluations[0].reason == "no_exact_killzone_active"
+
+
+def test_selector_strict_profile_rejects_weak_displacement() -> None:
+    def weak_displacement(context, config):
+        return {
+            "trade_allowed": True,
+            "direction": "bullish",
+            "entry": {"entry_price": 100.0},
+            "risk": {"stop_loss": 98.0, "target": 106.0, "rr": 3.0},
+            "score": {"total_score": 9.0, "trade_allowed": True},
+            "displacement_diagnostics": {
+                "body_to_range_ratio": 0.4,
+                "range_to_atr_ratio": 1.3,
+                "close_position_score": 0.8,
+                "fvg_created": True,
+            },
+        }
+
+    selector = ICTSMCStrategySelector(
+        (StrategyDefinition("candidate", "Candidate", weak_displacement, SetupType.FVG_CONTINUATION),)
+    )
+
+    result = selector.evaluate(
+        _context(),
+        {
+            "strict_displacement": True,
+            "displacement_thresholds": {
+                "body_to_range_ratio": 0.6,
+                "range_to_atr_ratio": 1.2,
+                "close_position_score": 0.75,
+            },
+        },
+    )
+
+    assert result.selected is None
+    assert "weak_displacement:body_to_range_ratio" in result.evaluations[0].reason

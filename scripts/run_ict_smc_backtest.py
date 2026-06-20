@@ -12,6 +12,7 @@ import argparse
 import csv
 import json
 import logging
+import subprocess
 import sys
 from collections import Counter, deque
 from dataclasses import dataclass
@@ -46,6 +47,7 @@ from src.infrastructure.broker.mt5_config import load_mt5_config
 from src.strategy.ict_smc_strategy_selector import ICTSMCStrategySelector, StrategyEvaluation
 
 TIMEFRAME_MINUTES = {"1m": 1, "15m": 15, "1h": 60, "4h": 240}
+DEFAULT_PROFILE_PATH = ROOT / "config" / "backtest_profiles.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,7 +136,16 @@ class FullSystemICTSMCBacktester:
             state.candles_by_timeframe["1m"].append(candle)
             self._ingest_structure_and_liquidity(candle, state)
 
+            tick = _synthetic_tick(self.symbol, candle, self.spread_price, index)
+            session_context = self.session_engine.evaluate_session_context(candle.end_time, tick.mid)
             candle_payload = _candle_to_backtest_row(candle)
+            candle_payload.update(
+                {
+                    "session_name": session_context.session_name,
+                    "killzone_active": session_context.killzone_active,
+                    "killzone_name": session_context.killzone_name,
+                }
+            )
             for position in list(open_positions):
                 managed = simulate_trade_management(position, candle_payload, dict(config.get("management", {})))
                 if managed["closed_trade"]:
@@ -162,7 +173,14 @@ class FullSystemICTSMCBacktester:
                         state.skipped_by_entry_drift += 1
                         pending_orders.remove(order)
                         continue
+                    post_cost_rr = _post_cost_rr(order, fill)
+                    minimum_rr = float(config.get("selector", {}).get("minimum_rr", config.get("minimum_rr", 1.5)))
+                    if post_cost_rr < minimum_rr:
+                        skipped_log.append(record_skipped_setup(order, f"post_cost_rr_below_minimum:{round(post_cost_rr, 4)}"))
+                        pending_orders.remove(order)
+                        continue
                     position = _position_from_fill(order, fill)
+                    position["post_cost_rr"] = round(post_cost_rr, 5)
                     immediate = simulate_trade_management(position, candle_payload, dict(config.get("management", {})))
                     if immediate["closed_trade"]:
                         trade_log.append(record_trade(immediate["closed_trade"]))
@@ -176,11 +194,9 @@ class FullSystemICTSMCBacktester:
             if index + 1 < self.warmup_bars:
                 continue
 
-            tick = _synthetic_tick(self.symbol, candle, self.spread_price, index)
-            session, _, _ = self.session_engine.evaluate_temporal_context(candle.end_time, tick.mid)
             swept_pools = self.liquidity_engine.evaluate_tick_sweeps(tick)
             state.active_liquidity_pools = self.liquidity_engine.active_pools_snapshot()
-            context = self._build_strategy_context(tick, state, swept_pools, session)
+            context = self._build_strategy_context(tick, state, swept_pools, session_context)
             selection = self.selector.evaluate(context, config.get("selector", {}))
             state.strategy_evaluations += len(selection.evaluations)
             _record_strategy_evaluations(
@@ -228,8 +244,8 @@ class FullSystemICTSMCBacktester:
                     state.stop_hardened += 1
                     setup = hardened.setup
 
-            signal = _setup_to_market_signal(setup, selected, candle.end_time, self.symbol)
-            pending_orders.append(place_pending_order(signal, {"order_type": BacktestOrderType.MARKET.value}))
+            signal = _setup_to_market_signal(setup, selected, candle.end_time, self.symbol, config, context)
+            pending_orders.append(place_pending_order(signal, {"order_type": signal.get("order_type")}))
             signal_log.append(signal)
             strategy_counter[selected.definition.key] += 1
             state.selected_signals += 1
@@ -247,10 +263,14 @@ class FullSystemICTSMCBacktester:
             {
                 "news_calendar_loaded": bool(config.get("news_calendar_loaded", False)),
                 "minimum_sample_trades": int(config.get("minimum_sample_trades", 30)),
+                "minimum_rr": float(config.get("selector", {}).get("minimum_rr", config.get("minimum_rr", 3.0))),
                 "strategy_summary": dict(strategy_counter),
                 "data_summary": {
                     "symbol": self.symbol,
+                    "source": config.get("source"),
+                    "profile_name": config.get("profile_name"),
                     "candles_1m": len(primary),
+                    "timeframe_counts": {timeframe: len(candles_by_timeframe.get(timeframe, [])) for timeframe in TIMEFRAME_MINUTES},
                     "from": primary[0].end_time.isoformat(),
                     "to": primary[-1].end_time.isoformat(),
                     "spread_price": self.spread_price,
@@ -259,6 +279,10 @@ class FullSystemICTSMCBacktester:
                     "stop_hardening_enabled": self.harden_stops,
                     "max_entry_drift_price": self.max_entry_drift_price,
                     "max_entry_drift_risk_fraction": self.max_entry_drift_risk_fraction,
+                    "git": config.get("git", {}),
+                    "command_args": config.get("command_args", {}),
+                    "active_profile": config.get("active_profile", {}),
+                    "selector_config": config.get("selector", {}),
                 },
             },
         )
@@ -319,7 +343,7 @@ class FullSystemICTSMCBacktester:
         tick: TickNode,
         state: ReplayState,
         swept_pools: Sequence[tuple[Any, float]],
-        session: Any,
+        session_context: Any,
     ) -> dict[str, Any]:
         candles_by_tf = {
             timeframe: [_candle_payload(candle, idx) for idx, candle in enumerate(candles)]
@@ -331,7 +355,9 @@ class FullSystemICTSMCBacktester:
         swings = [_swing_payload(pivot, idx) for idx, pivot in enumerate(state.structural_pivots[-100:])]
         bias = _directional_bias(candles_by_tf)
         latest_sweep = swept_payloads[-1] if swept_payloads else None
-        session_value = str(getattr(session, "value", session))
+        session_value = str(getattr(session_context, "session_name", session_context))
+        killzone_active = bool(getattr(session_context, "killzone_active", False))
+        killzone_name = getattr(session_context, "killzone_name", None)
         return {
             "symbol": tick.symbol,
             "timestamp": tick.timestamp,
@@ -362,7 +388,9 @@ class FullSystemICTSMCBacktester:
             "higher_timeframe_bias": _bias_to_strategy_text(bias.get("4h") or bias.get("1h")),
             "session_context": {
                 "session": session_value,
-                "killzone_active": session_value in {"LONDON_KILLZONE", "NEWYORK_KILLZONE"},
+                "session_name": session_value,
+                "killzone_active": killzone_active,
+                "killzone_name": killzone_name,
             },
             "session": session_value,
             "spread_status": {
@@ -553,8 +581,21 @@ def _markdown_report(result: Mapping[str, Any]) -> str:
     metrics = result.get("performance_metrics", {})
     diagnostics = result.get("diagnostics", {})
     report = result.get("report", {})
+    data_summary = report.get("data_summary", {})
     lines = [
         "# Apex ICT/SMC Full-System Backtest",
+        "",
+        "## Run Configuration",
+        f"- Profile: {data_summary.get('profile_name')}",
+        f"- Git branch: {data_summary.get('git', {}).get('branch')}",
+        f"- Git commit: {data_summary.get('git', {}).get('commit')}",
+        f"- Source: {data_summary.get('source')}",
+        f"- Symbol: {data_summary.get('symbol')}",
+        f"- Date range: {data_summary.get('from')} to {data_summary.get('to')}",
+        f"- Spread/slippage: {data_summary.get('spread_price')} / {data_summary.get('slippage_price')}",
+        f"- Timeframe counts: {data_summary.get('timeframe_counts')}",
+        f"- Selector config: {data_summary.get('selector_config')}",
+        f"- Management config: {data_summary.get('active_profile', {}).get('management')}",
         "",
         "## Performance",
         f"- Total trades: {metrics.get('total_trades', 0)}",
@@ -597,25 +638,70 @@ def _markdown_report(result: Mapping[str, Any]) -> str:
 def _write_trade_csv(path: Path, trades: Sequence[Mapping[str, Any]]) -> None:
     fields = [
         "trade_id",
+        "strategy",
         "symbol",
         "direction",
-        "entry_price",
-        "stop_loss",
-        "final_exit_reason",
-        "realized_R",
-        "result",
+        "session_name",
+        "killzone_name",
+        "killzone_active",
         "entry_time",
         "exit_time",
+        "duration_min",
+        "entry_price",
+        "intended_entry_price",
+        "fill_price",
+        "exit_price",
+        "stop_loss",
+        "initial_risk",
+        "target_1",
+        "target_2",
+        "final_target",
+        "estimated_rr",
+        "post_cost_rr",
+        "confidence_score",
+        "realized_R",
+        "result",
+        "final_exit_reason",
         "ambiguous_exit",
+        "components",
+        "rejection_reasons",
+        "spread_price",
+        "slippage_price",
+        "entry_drift",
+        "drift_risk_fraction",
+        "displacement_diagnostics",
     ]
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
         for trade in trades:
             writer.writerow({field: trade.get(field, "") for field in fields})
 
 
-def _setup_to_market_signal(setup: Any, selected: StrategyEvaluation, timestamp: datetime, symbol: str) -> dict[str, Any]:
+def _setup_to_market_signal(
+    setup: Any,
+    selected: StrategyEvaluation,
+    timestamp: datetime,
+    symbol: str,
+    config: Mapping[str, Any],
+    context: Mapping[str, Any],
+) -> dict[str, Any]:
+    targets = _target_ladder(setup, selected, config)
+    final_target = targets[-1]["price"] if targets else setup.take_profit
+    session_context = dict(context.get("session_context", {}) or {})
+    order_type = _intended_order_type(selected.signal)
+    setup_context = {
+        "strategy": selected.definition.key,
+        "setup_type": setup.setup_type.value,
+        "estimated_rr": setup.estimated_rr,
+        "confidence_score": setup.confidence_score,
+        "session_name": session_context.get("session_name") or session_context.get("session"),
+        "killzone_name": session_context.get("killzone_name"),
+        "killzone_active": session_context.get("killzone_active"),
+        "components": selected.signal.get("components") or selected.signal.get("components_detected"),
+        "rejection_reasons": selected.signal.get("rejection_reasons", []),
+        "displacement_diagnostics": _extract_displacement_diagnostics(selected.signal),
+    }
     return {
         "order_id": setup.id,
         "setup_id": setup.id,
@@ -623,20 +709,29 @@ def _setup_to_market_signal(setup: Any, selected: StrategyEvaluation, timestamp:
         "strategy": selected.definition.key,
         "setup_type": setup.setup_type.value,
         "direction": setup.direction.value,
-        "order_type": BacktestOrderType.MARKET.value,
+        "order_type": order_type,
+        "entry_type": selected.signal.get("entry_type") or selected.signal.get("entry_mode"),
         "signal_time": timestamp.isoformat(),
         "valid_from_time": timestamp.isoformat(),
         "expiry_time": setup.expiration_time.isoformat(),
         "entry_price": setup.entry_price,
+        "intended_entry_price": setup.entry_price,
         "stop_loss": setup.stop_loss,
-        "target_1": setup.entry_price + (setup.take_profit - setup.entry_price) / 3.0,
-        "target_2": setup.entry_price + 2.0 * (setup.take_profit - setup.entry_price) / 3.0,
-        "final_target": setup.take_profit,
+        "targets": targets,
+        "target_1": _named_target(targets, "target_1"),
+        "target_2": _named_target(targets, "target_2"),
+        "final_target": final_target,
         "estimated_rr": setup.estimated_rr,
         "confidence_score": setup.confidence_score,
+        "session_name": setup_context["session_name"],
+        "killzone_name": setup_context["killzone_name"],
+        "killzone_active": setup_context["killzone_active"],
+        "spread_price": config.get("spread_price"),
+        "slippage_price": config.get("slippage_price"),
         "move_stop_to_be_after_target_1": True,
         "trade_allowed": True,
-        "components_detected": {"strategy": selected.definition.key},
+        "components_detected": {"strategy": selected.definition.key, "raw": setup_context["components"]},
+        "setup_context": setup_context,
     }
 
 
@@ -651,12 +746,19 @@ def _signal_stub(selected: StrategyEvaluation, timestamp: datetime) -> dict[str,
 
 
 def _position_from_fill(order: Mapping[str, Any], fill: Mapping[str, Any]) -> dict[str, Any]:
+    intended = _optional_float(order.get("intended_entry_price") or order.get("entry_price"))
+    fill_price = _optional_float(fill.get("fill_price"))
+    stop = _optional_float(order.get("stop_loss"))
+    drift = abs((fill_price or 0.0) - (intended or 0.0)) if fill_price is not None and intended is not None else None
+    risk = abs((intended or 0.0) - (stop or 0.0)) if intended is not None and stop is not None else None
     return {
         "trade_id": order.get("order_id"),
         "symbol": order.get("symbol", "GOLD.i#"),
         "strategy": order.get("strategy"),
         "direction": order.get("direction"),
         "entry_price": fill["fill_price"],
+        "intended_entry_price": intended,
+        "fill_price": fill["fill_price"],
         "stop_loss": order["stop_loss"],
         "current_stop": order["stop_loss"],
         "targets": _targets_from_order(order),
@@ -665,6 +767,22 @@ def _position_from_fill(order: Mapping[str, Any], fill: Mapping[str, Any]) -> di
         "partials": [],
         "move_stop_to_be_after_target_1": bool(order.get("move_stop_to_be_after_target_1", True)),
         "entry_time": fill.get("fill_time"),
+        "signal_time": order.get("signal_time"),
+        "order_type": order.get("order_type"),
+        "entry_type": order.get("entry_type"),
+        "session_name": order.get("session_name"),
+        "killzone_name": order.get("killzone_name"),
+        "killzone_active": order.get("killzone_active"),
+        "estimated_rr": order.get("estimated_rr"),
+        "confidence_score": order.get("confidence_score"),
+        "spread_price": order.get("spread_price"),
+        "slippage_price": order.get("slippage_price"),
+        "entry_drift": round(drift, 5) if drift is not None else None,
+        "drift_risk_fraction": round(drift / risk, 5) if drift is not None and risk and risk > 0 else None,
+        "components": order.get("components_detected"),
+        "rejection_reasons": order.get("rejection_reasons", []),
+        "setup_context": order.get("setup_context", {}),
+        "displacement_diagnostics": (order.get("setup_context") or {}).get("displacement_diagnostics"),
     }
 
 
@@ -676,6 +794,108 @@ def _targets_from_order(order: Mapping[str, Any]) -> list[dict[str, Any]]:
         if order.get(name) is not None:
             targets.append({"name": name, "price": float(order[name]), "close_percent": close_percent})
     return targets
+
+
+def _target_ladder(setup: Any, selected: StrategyEvaluation, config: Mapping[str, Any]) -> list[dict[str, Any]]:
+    ladder = dict(config.get("target_ladder", {}) or {})
+    milestones = ladder.get("milestones") or [1, 2, 3]
+    close_percents = ladder.get("close_percents") or []
+    entry = float(setup.entry_price)
+    stop = float(setup.stop_loss)
+    risk = abs(entry - stop)
+    if risk <= 0:
+        return []
+
+    direction = setup.direction.value if hasattr(setup.direction, "value") else str(setup.direction)
+    is_buy = str(direction).upper() == OrderDirection.BUY.value
+    final_rr = _optional_float(ladder.get("final_rr"))
+    mode = str(ladder.get("mode", "strategy")).lower()
+    if final_rr is None and mode != "fixed_rr":
+        final_rr = float(selected.estimated_rr or setup.estimated_rr or 0.0)
+    if final_rr is None or final_rr <= 0:
+        final_rr = 3.0
+
+    cleaned_milestones = [float(item) for item in milestones if _optional_float(item) is not None and float(item) > 0]
+    if not cleaned_milestones:
+        cleaned_milestones = [1.0, 2.0, final_rr]
+    if max(cleaned_milestones) < final_rr:
+        cleaned_milestones.append(final_rr)
+
+    targets: list[dict[str, Any]] = []
+    for index, rr_value in enumerate(cleaned_milestones):
+        price = entry + risk * rr_value if is_buy else entry - risk * rr_value
+        close_percent = (
+            float(close_percents[index])
+            if index < len(close_percents) and _optional_float(close_percents[index]) is not None
+            else round(1.0 / len(cleaned_milestones), 5)
+        )
+        name = f"target_{index + 1}"
+        if index == len(cleaned_milestones) - 1:
+            name = "final_target"
+        targets.append({"name": name, "price": round(price, 5), "close_percent": close_percent, "rr": rr_value})
+    return _normalize_close_percents(targets)
+
+
+def _normalize_close_percents(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    total = sum(float(target.get("close_percent", 0.0)) for target in targets)
+    if total <= 0:
+        return targets
+    normalized = []
+    for target in targets:
+        data = dict(target)
+        data["close_percent"] = round(float(data.get("close_percent", 0.0)) / total, 5)
+        normalized.append(data)
+    return normalized
+
+
+def _named_target(targets: Sequence[Mapping[str, Any]], name: str) -> float | None:
+    for target in targets:
+        if target.get("name") == name:
+            return _optional_float(target.get("price"))
+    return None
+
+
+def _intended_order_type(signal: Mapping[str, Any]) -> str:
+    raw = " ".join(
+        str(value or "")
+        for value in (
+            signal.get("order_type"),
+            signal.get("entry_type"),
+            signal.get("entry_mode"),
+            signal.get("entry", {}).get("mode") if isinstance(signal.get("entry"), Mapping) else "",
+            signal.get("entry_model", {}).get("mode") if isinstance(signal.get("entry_model"), Mapping) else "",
+        )
+    ).lower()
+    if any(token in raw for token in ("market", "close", "confirmation")):
+        return BacktestOrderType.MARKET.value
+    return BacktestOrderType.LIMIT.value
+
+
+def _post_cost_rr(order: Mapping[str, Any], fill: Mapping[str, Any]) -> float:
+    fill_price = _optional_float(fill.get("fill_price"))
+    stop = _optional_float(order.get("stop_loss"))
+    final_target = _optional_float(order.get("final_target"))
+    if final_target is None and order.get("targets"):
+        final_target = _optional_float(list(order.get("targets", []))[-1].get("price"))
+    if fill_price is None or stop is None or final_target is None:
+        return 0.0
+    risk = abs(fill_price - stop)
+    if risk <= 0:
+        return 0.0
+    direction = str(order.get("direction", "")).upper()
+    reward = final_target - fill_price if direction == OrderDirection.BUY.value else fill_price - final_target
+    return round(max(0.0, reward / risk), 5)
+
+
+def _extract_displacement_diagnostics(signal: Mapping[str, Any]) -> Mapping[str, Any]:
+    for key in ("displacement_diagnostics", "displacement"):
+        value = signal.get(key)
+        if isinstance(value, Mapping):
+            return value
+    score = signal.get("score")
+    if isinstance(score, Mapping) and isinstance(score.get("displacement_diagnostics"), Mapping):
+        return score["displacement_diagnostics"]
+    return {}
 
 
 def _record_strategy_evaluations(
@@ -937,6 +1157,85 @@ def _optional_float(value: Any) -> float | None:
         return None
 
 
+def load_backtest_profile(profile_name: str, selector_config_path: str | None = None) -> dict[str, Any]:
+    path = Path(selector_config_path) if selector_config_path else DEFAULT_PROFILE_PATH
+    profiles = json.loads(path.read_text(encoding="utf-8"))
+    if profile_name not in profiles:
+        available = ", ".join(sorted(profiles))
+        raise ValueError(f"Unknown backtest profile {profile_name!r}. Available profiles: {available}")
+    profile = dict(profiles[profile_name])
+    profile["profile_name"] = profile_name
+    profile["profile_path"] = str(path)
+    return profile
+
+
+def _apply_cli_profile_overrides(profile: Mapping[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    resolved = json.loads(json.dumps(profile))
+    if args.minimum_rr is not None:
+        resolved["minimum_rr"] = args.minimum_rr
+    if args.max_hold_minutes is not None:
+        management = dict(resolved.get("management", {}) or {})
+        management["max_hold_minutes"] = args.max_hold_minutes
+        resolved["management"] = management
+    if args.disable_session:
+        filters = dict(resolved.get("session_filters", {}) or {})
+        disabled = list(filters.get("disabled_sessions", []) or [])
+        disabled.extend(args.disable_session)
+        filters["disabled_sessions"] = sorted(set(disabled))
+        resolved["session_filters"] = filters
+    if args.disable_killzone:
+        filters = dict(resolved.get("session_filters", {}) or {})
+        disabled = list(filters.get("disabled_killzones", []) or [])
+        disabled.extend(args.disable_killzone)
+        filters["disabled_killzones"] = sorted(set(disabled))
+        resolved["session_filters"] = filters
+    if args.target_final_rr is not None:
+        ladder = dict(resolved.get("target_ladder", {}) or {})
+        ladder["mode"] = "fixed_rr"
+        ladder["final_rr"] = args.target_final_rr
+        if args.target_final_rr >= 6:
+            ladder["milestones"] = [1, 2, 3, 4, 5, 6]
+            ladder["close_percents"] = [0.16, 0.16, 0.17, 0.17, 0.17, 0.17]
+        resolved["target_ladder"] = ladder
+    resolved["spread_price"] = args.spread_price if args.spread_price is not None else float(resolved.get("spread_price", 0.30))
+    resolved["slippage_price"] = args.slippage_price if args.slippage_price is not None else float(resolved.get("slippage_price", 0.05))
+    return resolved
+
+
+def _git_metadata() -> dict[str, str | None]:
+    return {
+        "commit": _git_value("rev-parse", "HEAD"),
+        "branch": _git_value("rev-parse", "--abbrev-ref", "HEAD"),
+    }
+
+
+def _git_value(*args: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        try:
+            completed = subprocess.run(
+                [r"C:\Program Files\Git\cmd\git.exe", *args],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip() or None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Backtest the current ICT/SMC selector before VPS deployment.")
     parser.add_argument("--source", choices=("mt5", "csv"), default="mt5")
@@ -947,8 +1246,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--csv-15m")
     parser.add_argument("--csv-1h")
     parser.add_argument("--csv-4h")
-    parser.add_argument("--spread-price", type=float, default=0.30)
-    parser.add_argument("--slippage-price", type=float, default=0.05)
+    parser.add_argument("--spread-price", type=float)
+    parser.add_argument("--slippage-price", type=float)
+    parser.add_argument("--profile", default="strict_intraday_xauusd")
+    parser.add_argument("--selector-config", help="Path to a JSON file containing named backtest profiles.")
+    parser.add_argument("--minimum-rr", type=float, help="Override profile final minimum RR after costs.")
+    parser.add_argument("--max-hold-minutes", type=int, help="Override profile max trade hold time.")
+    parser.add_argument("--disable-session", action="append", default=[], help="Disable a broad session name for this run.")
+    parser.add_argument("--disable-killzone", action="append", default=[], help="Disable an exact killzone name for this run.")
+    parser.add_argument("--target-final-rr", type=float, help="Override target ladder final RR, e.g. 3 or 6.")
     parser.add_argument("--warmup-bars", type=int, default=80)
     parser.add_argument("--strategy-cooldown-minutes", type=int, default=15)
     parser.add_argument("--max-concurrent-positions", type=int, default=1)
@@ -991,11 +1297,12 @@ def _configure_backtest_logging(*, verbose: bool) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     _configure_backtest_logging(verbose=args.verbose_logs)
+    profile = _apply_cli_profile_overrides(load_backtest_profile(args.profile, args.selector_config), args)
     inputs = load_inputs(args)
     runner = FullSystemICTSMCBacktester(
         symbol=inputs.symbol,
-        spread_price=args.spread_price,
-        slippage_price=args.slippage_price,
+        spread_price=float(profile["spread_price"]),
+        slippage_price=float(profile["slippage_price"]),
         warmup_bars=args.warmup_bars,
         max_concurrent_positions=args.max_concurrent_positions,
         strategy_cooldown_minutes=args.strategy_cooldown_minutes,
@@ -1006,10 +1313,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     result = runner.run(
         inputs.candles_by_timeframe,
         {
+            "source": inputs.source,
+            "profile_name": profile.get("profile_name"),
+            "active_profile": profile,
+            "git": _git_metadata(),
+            "command_args": vars(args),
+            "selector": {
+                "enabled_strategies": profile.get("enabled_strategies", []),
+                "disabled_strategies": profile.get("disabled_strategies", []),
+                "minimum_score": profile.get("minimum_score"),
+                "minimum_rr": profile.get("minimum_rr"),
+                "strategy_min_rr": profile.get("strategy_min_rr", {}),
+                "strategy_min_scores": profile.get("strategy_min_scores", {}),
+                "session_filters": profile.get("session_filters", {}),
+                "strict_displacement": profile.get("strict_displacement", False),
+                "displacement_thresholds": profile.get("displacement_thresholds", {}),
+            },
+            "minimum_rr": profile.get("minimum_rr"),
+            "target_ladder": profile.get("target_ladder", {}),
+            "spread_price": profile.get("spread_price"),
+            "slippage_price": profile.get("slippage_price"),
             "news_calendar_loaded": False,
             "minimum_sample_trades": 30,
             "close_open_positions_at_end": True,
-            "management": {"same_candle_policy": "conservative"},
+            "management": profile.get("management", {"same_candle_policy": "conservative"}),
         },
     )
     result["input_summary"] = {
@@ -1017,6 +1344,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "symbol": inputs.symbol,
         "from": args.from_date,
         "to": args.to_date,
+        "profile": profile.get("profile_name"),
+        "spread_price": profile.get("spread_price"),
+        "slippage_price": profile.get("slippage_price"),
         "timeframes": {key: len(value) for key, value in inputs.candles_by_timeframe.items()},
     }
     paths = save_outputs(result, Path(args.output_dir), inputs.source)

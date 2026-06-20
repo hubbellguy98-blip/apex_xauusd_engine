@@ -23,6 +23,9 @@ It is not connected to live VPS execution. It is a research/simulation layer for
 - Partial take profits must be weighted by position percentage.
 - R-multiple must use the original risk, even if the stop later moves to breakeven.
 - News/session filters should log skipped trades, not disappear from the audit trail.
+- Broad sessions and exact killzones are separate fields. The full London session is not treated as a killzone.
+- Strict profiles reject trades whose post-fill, post-cost final RR is below the configured minimum.
+- Intraday profiles can force exits for max hold time, session close, Friday cutoff, and stale trades.
 
 ## Function List
 
@@ -81,6 +84,8 @@ The simulator supports target ladders such as:
 - 25% at `target_2`
 - 25% at `final_target`
 
+The full-system runner can also force a fixed-R ladder from the active backtest profile. For example, a `1:6` ladder uses six milestones while a strict intraday validation profile can require a final 3R target. This keeps the report consistent with the intended trade-management model instead of silently splitting whatever final target a strategy returned.
+
 Each partial logs:
 
 - target name
@@ -124,6 +129,13 @@ The report warns when:
 - news calendar is missing for XAUUSD
 - sample size is too small
 - ambiguous OHLC exits were resolved with stop-first logic
+- profit factor is below `1.2`
+- expectancy or net R is not positive
+- max drawdown breaches the configured deployment gate
+- any completed trade has final post-cost RR below the configured minimum
+- completed trades contain duration outliers
+- session-level profit factor is below `1`
+- score buckets are non-monotonic
 
 These warnings are important. A backtest without historical news data or enough trades is not reliable proof of edge.
 
@@ -166,8 +178,14 @@ print(result["skipped_setup_log"])
 For pre-deployment testing of the current ICT/SMC selector, use:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\run_ict_smc_backtest.py --source mt5 --symbol GOLD.i# --from 2026-06-01 --to 2026-06-14
+.\.venv\Scripts\python.exe scripts\run_ict_smc_backtest.py --source mt5 --symbol GOLD.i# --from 2026-06-01 --to 2026-06-14 --profile strict_intraday_xauusd
 ```
+
+Profiles live in `config/backtest_profiles.json`:
+
+- `broad_research` keeps the selector broad and diagnostic.
+- `strict_intraday_xauusd` requires stricter score/RR, exact killzone handling, 3R post-cost acceptance, and intraday time exits.
+- `session_filtered_experiment` focuses on the stronger NY Open and Silver Bullet AM windows without hardcoding those filters into live strategy code.
 
 This runner:
 
@@ -176,10 +194,12 @@ This runner:
 - feeds the current ICT/SMC strategy selector;
 - enforces one simulated position at a time;
 - keeps evaluating strategy candidates while a position is open, then logs them as `blocked_existing_position` instead of hiding them;
-- applies market entry on the next candle open;
+- preserves the strategy's intended market or limit order style;
 - rejects fills that drift too far away from the original setup entry;
+- rejects fills whose actual post-cost final RR falls below the active profile minimum;
 - applies spread and slippage assumptions;
 - applies the same demo stop-hardening layer unless `--no-stop-hardening` is passed;
+- writes the git SHA, branch, command args, active profile, selector config, spread/slippage, data source, symbol, date range, and timeframe counts into the JSON/Markdown report;
 - separates completed-trade metrics from open-at-end mark-to-market positions;
 - writes Markdown, JSON, and CSV reports into `backtest_outputs/`.
 
@@ -187,6 +207,13 @@ Example with stricter execution costs:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\run_ict_smc_backtest.py --source mt5 --symbol GOLD.i# --from 2026-06-01 --to 2026-06-14 --spread-price 0.40 --slippage-price 0.10
+```
+
+Profile override examples:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_ict_smc_backtest.py --source mt5 --symbol GOLD.i# --from 2026-06-01 --to 2026-06-14 --profile broad_research --minimum-rr 2
+.\.venv\Scripts\python.exe scripts\run_ict_smc_backtest.py --source mt5 --symbol GOLD.i# --from 2026-06-01 --to 2026-06-14 --profile strict_intraday_xauusd --target-final-rr 6
 ```
 
 If the backtest shows too few trades, inspect the Strategy Diagnostics section:
@@ -214,6 +241,16 @@ CSV fallback:
 If only 1m CSV data is provided, the runner derives 15m, 1h, and 4h candles from it so multi-timeframe strategy checks can still run.
 
 The runner does not place live or demo broker orders. It is offline simulation only.
+
+## Trade Log Analyzer
+
+After a run, analyze the exported trade CSV with:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\analyze_trade_log.py .\backtest_outputs\ict_smc_backtest_mt5_YYYYMMDD_HHMMSS_trades.csv
+```
+
+The analyzer writes Markdown and JSON covering overall metrics, direction, session, killzone, UTC hour, component tags, score buckets, duration buckets, displacement vs no-displacement, max drawdown, and streaks. Use this before changing VPS settings.
 
 ## Final Principle
 

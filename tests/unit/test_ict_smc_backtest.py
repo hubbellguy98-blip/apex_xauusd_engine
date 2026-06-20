@@ -165,6 +165,31 @@ def test_partial_take_profit_tracks_weighted_r_and_breakeven_stop() -> None:
     assert second["closed_trade"]["realized_R"] == 0.5
 
 
+def test_trade_management_closes_on_max_hold_time() -> None:
+    position = {
+        "trade_id": "BT_TIME_001",
+        "symbol": "XAUUSD",
+        "direction": "bullish",
+        "entry_time": "2026-06-04T10:00:00+00:00",
+        "entry_price": 100.0,
+        "stop_loss": 98.0,
+        "current_stop": 98.0,
+        "targets": [{"name": "final_target", "price": 106.0, "close_percent": 1.0}],
+        "remaining_percent": 1.0,
+        "realized_R": 0.0,
+        "partials": [],
+    }
+
+    result = simulate_trade_management(
+        position,
+        _candle("2026-06-04T13:00:00", 101.0, 101.5, 100.5, 101.0),
+        {"max_hold_minutes": 180},
+    )
+
+    assert result["closed_trade"]["final_exit_reason"] == "max_hold_time"
+    assert result["closed_trade"]["duration_min"] == 185.0
+
+
 def test_run_backtest_logs_trade_metrics_and_skips_news_restricted_signal() -> None:
     candles = [
         _candle("2026-06-04T10:00:00", 100, 101, 99, 100.5),

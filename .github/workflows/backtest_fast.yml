@@ -1,0 +1,53 @@
+name: Backtest Fast
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "config/**"
+      - "scripts/run_ict_smc_backtest.py"
+      - "scripts/analyze_trade_log.py"
+      - "src/backtest/**"
+      - "src/strategy/**"
+      - "tests/unit/test_*backtest*.py"
+      - ".github/workflows/backtest_fast.yml"
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: matrix
+        shell: bash
+        run: |
+          chunks='{"include":[{"profile":"broad_research"},{"profile":"strict_intraday_xauusd"},{"profile":"session_filtered_experiment"}]}'
+          echo "Prepared 3 backtest profile chunk(s)"
+          printf 'matrix=%s\n' "$chunks" >> "$GITHUB_OUTPUT"
+
+  validate:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install package
+        run: python -m pip install -e ".[dev]"
+      - name: Compile
+        run: python -m compileall -q config src scripts tests
+      - name: Focused tests
+        run: python -m pytest -q -o addopts= tests/unit/test_ict_smc_backtest.py tests/unit/test_ict_smc_strategy_selector.py tests/unit/test_full_system_ict_smc_backtest_runner.py tests/unit/test_session_engine.py
+      - name: Profile visible
+        run: |
+          python - <<'PY'
+          import json
+          profiles = json.load(open("config/backtest_profiles.json", encoding="utf-8"))
+          assert "${{ matrix.profile }}" in profiles
+          print("validated profile:", "${{ matrix.profile }}")
+          PY
