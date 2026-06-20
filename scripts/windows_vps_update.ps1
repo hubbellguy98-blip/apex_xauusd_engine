@@ -55,7 +55,7 @@ Write-Host "Refreshing Python dependencies..."
 
 Write-Host ""
 Write-Host "Compiling source files..."
-& $VenvPython -m compileall -q config src scripts tests
+& $VenvPython -m compileall -q config src scripts tests reports
 
 if (-not $SkipVerification) {
     Write-Host ""

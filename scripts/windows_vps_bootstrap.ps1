@@ -29,7 +29,7 @@ Write-Host "Installing Apex dependencies..."
 & $VenvPython -m pip install -e ".[dev]"
 
 Write-Host "Compiling source files..."
-& $VenvPython -m compileall -q config src scripts tests
+& $VenvPython -m compileall -q config src scripts tests reports
 
 if (-not (Test-Path ".\.env")) {
     Write-Host "Creating .env from .env.example. Edit it before connecting to MT5."
