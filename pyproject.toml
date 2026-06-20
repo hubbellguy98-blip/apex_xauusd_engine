@@ -15,6 +15,7 @@ dependencies = [
     "pydantic-settings>=2.2",
     "sqlalchemy>=2.0",
     "structlog>=24.1",
+    "tzdata>=2026.2; platform_system == 'Windows'",
     "uvicorn>=0.29",
     "websockets>=12.0",
 ]
