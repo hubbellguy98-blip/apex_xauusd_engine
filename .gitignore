@@ -9,6 +9,7 @@ __pycache__/
 .coverage
 dist/
 build/
+*.egg-info/
 .apex_runtime/
 backtest_outputs/
 reports/output/
